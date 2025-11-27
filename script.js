@@ -17,8 +17,14 @@ const state = {
     dragComponent: null,
     mode: 'select', // select, wire
     isSimulating: false,
+    simulationResult: null,
     mouse: { x: 0, y: 0 },
-    wireStartNode: null
+    // Wire drawing state
+    isDrawingWire: false,
+    wireStartNode: null,
+    wirePath: [], // Array of {x, y} waypoints
+    kvlPath: [], // List of components selected for KVL loop
+    view: { x: 0, y: 0, scale: 1 } // Zoom and Pan
 };
 
 // Canvas Setup
@@ -35,6 +41,29 @@ function resizeCanvas() {
 
 window.addEventListener('resize', resizeCanvas);
 resizeCanvas();
+
+// --- Classes ---
+// ... (Component and Wire classes remain the same, they use world coords)
+
+// ...
+
+// --- Interaction ---
+
+function snapToGrid(val) {
+    return Math.round(val / GRID_SIZE) * GRID_SIZE;
+}
+
+function getMousePos(evt) {
+    const rect = canvas.getBoundingClientRect();
+    const screenX = evt.clientX - rect.left;
+    const screenY = evt.clientY - rect.top;
+
+    // Convert to world coordinates
+    return {
+        x: (screenX - state.view.x) / state.view.scale,
+        y: (screenY - state.view.y) / state.view.scale
+    };
+}
 
 // --- Classes ---
 
@@ -153,15 +182,30 @@ class Component {
 }
 
 class Wire {
-    constructor(startNode, endNode) {
-        this.startNode = startNode; // {x, y} or Component Terminal reference
-        this.endNode = endNode;
+    constructor(startNode, endNode, waypoints = []) {
+        this.startNode = startNode; // {comp, index}
+        this.endNode = endNode;     // {comp, index}
+        this.waypoints = waypoints; // Array of {x, y}
+    }
+
+    getStartPos() {
+        const terminals = this.startNode.comp.getTerminalsWorld();
+        return terminals[this.startNode.index];
+    }
+
+    getEndPos() {
+        const terminals = this.endNode.comp.getTerminalsWorld();
+        return terminals[this.endNode.index];
     }
 
     draw(ctx) {
+        const start = this.getStartPos();
+        const end = this.getEndPos();
+
         ctx.beginPath();
-        ctx.moveTo(this.startNode.x, this.startNode.y);
-        ctx.lineTo(this.endNode.x, this.endNode.y);
+        ctx.moveTo(start.x, start.y);
+        this.waypoints.forEach(p => ctx.lineTo(p.x, p.y));
+        ctx.lineTo(end.x, end.y);
         ctx.strokeStyle = '#1f2937';
         ctx.lineWidth = 2;
         ctx.stroke();
@@ -354,36 +398,127 @@ function draw() {
     // Clear
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // Grid
+    ctx.save();
+    // Apply Zoom and Pan
+    ctx.translate(state.view.x, state.view.y);
+    ctx.scale(state.view.scale, state.view.scale);
+
+    // Grid (World Coordinates)
+    const GRID_EXTENT = 5000;
     ctx.strokeStyle = '#f0f0f0';
     ctx.lineWidth = 1;
     ctx.beginPath();
-    for (let x = 0; x < canvas.width; x += GRID_SIZE) {
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, canvas.height);
+    for (let x = -GRID_EXTENT; x <= GRID_EXTENT; x += GRID_SIZE) {
+        ctx.moveTo(x, -GRID_EXTENT);
+        ctx.lineTo(x, GRID_EXTENT);
     }
-    for (let y = 0; y < canvas.height; y += GRID_SIZE) {
-        ctx.moveTo(0, y);
-        ctx.lineTo(canvas.width, y);
+    for (let y = -GRID_EXTENT; y <= GRID_EXTENT; y += GRID_SIZE) {
+        ctx.moveTo(-GRID_EXTENT, y);
+        ctx.lineTo(GRID_EXTENT, y);
     }
     ctx.stroke();
 
     // Wires
     state.wires.forEach(w => w.draw(ctx));
 
-    // Temp wire
-    if (state.mode === 'wire' && state.wireStartNode) {
+    // Temp wire (while drawing)
+    if (state.isDrawingWire && state.wireStartNode) {
         ctx.beginPath();
-        ctx.moveTo(state.wireStartNode.x, state.wireStartNode.y);
+        // Start from terminal
+        const terminals = state.wireStartNode.comp.getTerminalsWorld();
+        const start = terminals[state.wireStartNode.index];
+        ctx.moveTo(start.x, start.y);
+
+        // Draw through waypoints
+        state.wirePath.forEach(p => ctx.lineTo(p.x, p.y));
+
+        // Draw to mouse
         ctx.lineTo(state.mouse.x, state.mouse.y);
+
         ctx.strokeStyle = '#9ca3af';
         ctx.setLineDash([5, 5]);
         ctx.stroke();
         ctx.setLineDash([]);
+
+        // Draw waypoints
+        ctx.fillStyle = '#9ca3af';
+        state.wirePath.forEach(p => {
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, 2, 0, Math.PI * 2);
+            ctx.fill();
+        });
     }
 
     // Components
     state.components.forEach(c => c.draw(ctx));
+
+    // Simulation Overlays
+    if (state.isSimulating && state.simulationResult) {
+        const { nodeVoltages, nodeMap, sourceCurrents } = state.simulationResult;
+
+        ctx.font = '10px monospace';
+        ctx.fillStyle = '#059669';
+
+        state.components.forEach(c => {
+            const terminals = c.getTerminalsWorld();
+            terminals.forEach((t, i) => {
+                const nodeId = `${c.id}_${i}`;
+                const nodeIdx = nodeMap.get(nodeId);
+                const voltage = nodeVoltages.get(nodeIdx);
+
+                if (voltage !== undefined) {
+                    ctx.fillText(`${voltage.toFixed(1)}V`, t.x + 5, t.y - 5);
+                }
+            });
+
+            // Draw Currents
+            if (c.type === 'resistor') {
+                const n1 = nodeMap.get(`${c.id}_0`);
+                const n2 = nodeMap.get(`${c.id}_1`);
+                const v1 = nodeVoltages.get(n1);
+                const v2 = nodeVoltages.get(n2);
+                const current = (v1 - v2) / c.value;
+
+                ctx.save();
+                ctx.translate(c.x, c.y);
+                ctx.rotate(c.rotation * Math.PI / 2);
+
+                ctx.fillStyle = '#dc2626';
+                ctx.fillText(`${Math.abs(current).toFixed(3)}A`, 0, 20);
+
+                if (Math.abs(current) > 1e-6) {
+                    const dir = current > 0 ? 1 : -1;
+                    ctx.beginPath();
+                    ctx.moveTo(-10 * dir, 5);
+                    ctx.lineTo(10 * dir, 5);
+                    ctx.lineTo(5 * dir, 0);
+                    ctx.moveTo(10 * dir, 5);
+                    ctx.lineTo(5 * dir, 10);
+                    ctx.strokeStyle = '#dc2626';
+                    ctx.stroke();
+                }
+
+                ctx.restore();
+            }
+        });
+    }
+
+    // KVL Path Highlight
+    if (state.isSimulating && state.kvlPath.length > 0) {
+        ctx.save();
+        ctx.strokeStyle = '#d97706'; // Amber
+        ctx.lineWidth = 4;
+        state.kvlPath.forEach(c => {
+            ctx.save();
+            ctx.translate(c.x, c.y);
+            ctx.rotate(c.rotation * Math.PI / 2);
+            ctx.strokeRect(-c.width / 2 - 8, -c.height / 2 - 8, c.width + 16, c.height + 16);
+            ctx.restore();
+        });
+        ctx.restore();
+    }
+
+    ctx.restore();
 }
 
 function loop() {
@@ -400,11 +535,43 @@ function snapToGrid(val) {
 
 function getMousePos(evt) {
     const rect = canvas.getBoundingClientRect();
+    const screenX = evt.clientX - rect.left;
+    const screenY = evt.clientY - rect.top;
+
+    // Convert to world coordinates
     return {
-        x: evt.clientX - rect.left,
-        y: evt.clientY - rect.top
+        x: (screenX - state.view.x) / state.view.scale,
+        y: (screenY - state.view.y) / state.view.scale
     };
 }
+
+// Zoom
+canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const zoomIntensity = 0.1;
+    const rect = canvas.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
+
+    // Get world coordinates before zoom
+    const worldX = (mouseX - state.view.x) / state.view.scale;
+    const worldY = (mouseY - state.view.y) / state.view.scale;
+
+    // Update scale
+    const delta = e.deltaY < 0 ? 1 : -1;
+    const newScale = state.view.scale * (1 + delta * zoomIntensity);
+
+    // Clamp scale
+    if (newScale < 0.1 || newScale > 5) return;
+
+    state.view.scale = newScale;
+
+    // Adjust position to keep mouse over same world point
+    state.view.x = mouseX - worldX * state.view.scale;
+    state.view.y = mouseY - worldY * state.view.scale;
+
+    draw();
+}, { passive: false });
 
 function getHoveredTerminal(x, y) {
     for (const comp of state.components) {
@@ -433,6 +600,9 @@ paletteItems.forEach(item => {
 document.getElementById('mode-wire').addEventListener('click', () => {
     state.mode = 'wire';
     state.selected = null;
+    state.isDrawingWire = false;
+    state.wireStartNode = null;
+    state.wirePath = [];
     draw();
 });
 
@@ -482,14 +652,43 @@ function selectComponent(comp) {
 
 // Canvas Mouse Events
 canvas.addEventListener('mousedown', (e) => {
+    // Panning (Middle Mouse Button)
+    if (e.button === 1) {
+        state.isPanning = true;
+        state.panStart = { x: e.clientX, y: e.clientY };
+        return;
+    }
+
     const pos = getMousePos(e);
     state.mouse = pos;
 
     if (state.mode === 'wire') {
         const term = getHoveredTerminal(pos.x, pos.y);
-        if (term) {
-            state.wireStartNode = term;
+
+        if (!state.isDrawingWire) {
+            // Start drawing
+            if (term) {
+                state.isDrawingWire = true;
+                state.wireStartNode = term;
+                state.wirePath = [];
+            }
+        } else {
+            // Continue drawing
+            if (term) {
+                // Clicked on a terminal - finish wire
+                if (term.comp !== state.wireStartNode.comp || term.index !== state.wireStartNode.index) {
+                    state.wires.push(new Wire(state.wireStartNode, term, [...state.wirePath]));
+                }
+                // Reset
+                state.isDrawingWire = false;
+                state.wireStartNode = null;
+                state.wirePath = [];
+            } else {
+                // Clicked on empty space - add waypoint
+                state.wirePath.push({ x: snapToGrid(pos.x), y: snapToGrid(pos.y) });
+            }
         }
+        draw();
     } else {
         // Select mode
         const clickedComp = state.components.find(c => c.hitTest(pos.x, pos.y));
@@ -505,6 +704,17 @@ canvas.addEventListener('mousedown', (e) => {
 });
 
 canvas.addEventListener('mousemove', (e) => {
+    // Panning
+    if (state.isPanning) {
+        const dx = e.clientX - state.panStart.x;
+        const dy = e.clientY - state.panStart.y;
+        state.view.x += dx;
+        state.view.y += dy;
+        state.panStart = { x: e.clientX, y: e.clientY };
+        draw();
+        return;
+    }
+
     const pos = getMousePos(e);
     state.mouse = pos;
 
@@ -512,6 +722,10 @@ canvas.addEventListener('mousemove', (e) => {
         // Visual feedback for terminals
         const term = getHoveredTerminal(pos.x, pos.y);
         canvas.style.cursor = term ? 'crosshair' : 'default';
+
+        if (state.isDrawingWire) {
+            draw();
+        }
     } else if (state.isDragging && state.dragComponent) {
         state.dragComponent.x = snapToGrid(pos.x);
         state.dragComponent.y = snapToGrid(pos.y);
@@ -521,28 +735,19 @@ canvas.addEventListener('mousemove', (e) => {
         const hoveredComp = state.components.find(c => c.hitTest(pos.x, pos.y));
         canvas.style.cursor = hoveredComp ? 'move' : 'default';
     }
-
-    if (state.mode === 'wire' && state.wireStartNode) {
-        draw(); // Redraw for temp wire
-    }
 });
 
 canvas.addEventListener('mouseup', (e) => {
-    const pos = getMousePos(e);
-
-    if (state.mode === 'wire' && state.wireStartNode) {
-        const term = getHoveredTerminal(pos.x, pos.y);
-        if (term && (term.comp !== state.wireStartNode.comp || term.index !== state.wireStartNode.index)) {
-            // Create wire
-            // Store references to component IDs and terminal indices for robustness
-            state.wires.push(new Wire(state.wireStartNode, term));
-        }
-        state.wireStartNode = null;
-        draw();
+    if (e.button === 1) {
+        state.isPanning = false;
+        return;
     }
 
+    const pos = getMousePos(e);
     state.isDragging = false;
     state.dragComponent = null;
+
+    // Note: Wire creation is now handled in mousedown (click-click interaction)
 });
 
 // Property Updates
@@ -574,6 +779,9 @@ document.getElementById('btn-delete-comp').addEventListener('click', () => {
 document.getElementById('btn-clear').addEventListener('click', () => {
     state.components = [];
     state.wires = [];
+    state.isDrawingWire = false;
+    state.wireStartNode = null;
+    state.wirePath = [];
     selectComponent(null);
     draw();
 });
@@ -596,7 +804,9 @@ window.addEventListener('keydown', (e) => {
     }
     if (e.key === 'Escape') {
         state.mode = 'select';
+        state.isDrawingWire = false;
         state.wireStartNode = null;
+        state.wirePath = [];
         selectComponent(null);
         draw();
     }
@@ -644,7 +854,6 @@ function updateOverlay() {
     if (!state.isSimulating || !state.simulationResult) return;
 
     // Show node voltages
-    // This is a simple debug view, we should improve visualization in draw()
     let html = '<strong>Результаты:</strong><br>';
     state.simulationResult.nodeVoltages.forEach((v, k) => {
         html += `Узел ${k}: ${v.toFixed(2)} В<br>`;
@@ -652,110 +861,7 @@ function updateOverlay() {
     overlayInfo.innerHTML = html;
 }
 
-// Override draw to show simulation results
-const originalDraw = draw;
-draw = function () {
-    // Call original draw to render components
-    // We need to access the original draw function logic. 
-    // Since I replaced the loop, I should refactor 'draw' to be cleaner or just copy-paste the body here.
-    // For now, let's just copy the body of the original draw function and add simulation overlays.
-
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    // Grid
-    ctx.strokeStyle = '#f0f0f0';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    for (let x = 0; x < canvas.width; x += GRID_SIZE) {
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, canvas.height);
-    }
-    for (let y = 0; y < canvas.height; y += GRID_SIZE) {
-        ctx.moveTo(0, y);
-        ctx.lineTo(canvas.width, y);
-    }
-    ctx.stroke();
-
-    // Wires
-    state.wires.forEach(w => w.draw(ctx));
-
-    // Temp wire
-    if (state.mode === 'wire' && state.wireStartNode) {
-        ctx.beginPath();
-        ctx.moveTo(state.wireStartNode.x, state.wireStartNode.y);
-        ctx.lineTo(state.mouse.x, state.mouse.y);
-        ctx.strokeStyle = '#9ca3af';
-        ctx.setLineDash([5, 5]);
-        ctx.stroke();
-        ctx.setLineDash([]);
-    }
-
-    // Components
-    state.components.forEach(c => c.draw(ctx));
-
-    // Simulation Overlays
-    if (state.isSimulating && state.simulationResult) {
-        const { nodeVoltages, nodeMap, sourceCurrents } = state.simulationResult;
-
-        // Draw Node Voltages
-        // We can iterate over components to find terminal positions and draw voltage there
-        // Or better, iterate over unique nodes if we had their positions.
-        // Let's iterate components terminals.
-
-        ctx.font = '10px monospace';
-        ctx.fillStyle = '#059669';
-
-        state.components.forEach(c => {
-            const terminals = c.getTerminalsWorld();
-            terminals.forEach((t, i) => {
-                const nodeId = `${c.id}_${i}`;
-                const nodeIdx = nodeMap.get(nodeId);
-                const voltage = nodeVoltages.get(nodeIdx);
-
-                if (voltage !== undefined) {
-                    ctx.fillText(`${voltage.toFixed(1)}V`, t.x + 5, t.y - 5);
-                }
-            });
-
-            // Draw Currents
-            if (c.type === 'resistor') {
-                const n1 = nodeMap.get(`${c.id}_0`);
-                const n2 = nodeMap.get(`${c.id}_1`);
-                const v1 = nodeVoltages.get(n1);
-                const v2 = nodeVoltages.get(n2);
-                const current = (v1 - v2) / c.value; // Current from 0 to 1
-
-                // Draw arrow at center
-                ctx.save();
-                ctx.translate(c.x, c.y);
-                ctx.rotate(c.rotation * Math.PI / 2);
-
-                ctx.fillStyle = '#dc2626';
-                ctx.fillText(`${Math.abs(current).toFixed(3)}A`, 0, 20);
-
-                // Arrow direction
-                if (Math.abs(current) > 1e-6) {
-                    const dir = current > 0 ? 1 : -1;
-                    ctx.beginPath();
-                    ctx.moveTo(-10 * dir, 5);
-                    ctx.lineTo(10 * dir, 5);
-                    ctx.lineTo(5 * dir, 0); // Arrowhead
-                    ctx.moveTo(10 * dir, 5);
-                    ctx.lineTo(5 * dir, 10);
-                    ctx.strokeStyle = '#dc2626';
-                    ctx.stroke();
-                }
-
-                ctx.restore();
-            }
-        });
-    }
-};
-
 // --- Educational Tools (KCL/KVL) ---
-
-// State for KVL path selection
-state.kvlPath = []; // List of components selected for KVL loop
 
 function getHoveredNode(x, y) {
     // Find terminal near mouse
@@ -799,17 +905,6 @@ function calculateKCL(nodeIdx) {
                     current = (i === 0) ? i0to1 : -i0to1;
 
                 } else if (c.type === 'voltage') {
-                    // For voltage source, we have the current from the solver
-                    // The solver returns current from + to - (or vice versa depending on convention)
-                    // My solver convention:
-                    // V_pos - V_neg = V_source
-                    // Current variable is usually defined flowing from pos to neg inside source?
-                    // Wait, MNA standard: current flows from + to - through the source? 
-                    // Let's check the matrix stamp.
-                    // A[iPos][iSrc] += 1 -> KCL at Pos: ... + I_src = 0 -> I_src leaves Pos?
-                    // A[iNeg][iSrc] -= 1 -> KCL at Neg: ... - I_src = 0 -> I_src enters Neg?
-                    // So I_src is current LEAVING Positive terminal.
-
                     const iSrc = state.simulationResult.sourceCurrents.get(c.id);
                     // Terminal 1 is Positive, Terminal 0 is Negative
                     if (i === 1) { // Positive terminal
@@ -830,8 +925,6 @@ function calculateKCL(nodeIdx) {
 
 // Update overlay with KCL info if hovering a node
 canvas.addEventListener('mousemove', (e) => {
-    // Existing mousemove logic for drag/hover/wire mode is already handled by the first listener.
-    // This listener is specifically for KCL/KVL overlay updates during simulation.
     if (!state.isSimulating) return;
 
     const pos = getMousePos(e);
@@ -892,17 +985,6 @@ function updateKVLOverlay() {
     let html = `<strong>Контур (KVL):</strong><br>`;
 
     state.kvlPath.forEach(c => {
-        // Calculate voltage drop
-        // We need to know the direction of traversal to sum correctly.
-        // This is tricky without a defined loop direction.
-        // For now, let's just sum absolute drops or standard drops?
-        // KVL states sum of voltage drops = 0.
-        // But we need to know if we are going with or against current/polarity.
-
-        // Simplified approach: Just show the voltage drop across the component.
-        // User has to mentally sum them?
-        // Or we can try to guess direction based on previous component?
-
         let vDrop = 0;
         const n1 = state.simulationResult.nodeMap.get(`${c.id}_0`);
         const n2 = state.simulationResult.nodeMap.get(`${c.id}_1`);
@@ -912,32 +994,9 @@ function updateKVLOverlay() {
         vDrop = v1 - v2; // Drop from 0 to 1
 
         const name = c.type === 'resistor' ? 'R' : 'E';
-        html += `${name}: ${vDrop.toFixed(2)} В<br>`; // Show signed drop
-
-        // It's hard to sum automatically without order.
+        html += `${name}: ${vDrop.toFixed(2)} В<br>`;
     });
 
     html += `<small>Выберите компоненты по порядку</small>`;
     overlayInfo.innerHTML = html;
 }
-
-// Update draw to highlight KVL path
-const prevDraw = draw; // Store the already overridden draw function
-draw = function () {
-    prevDraw(); // Call the previous draw function (which includes simulation overlays)
-
-    if (state.isSimulating && state.kvlPath.length > 0) {
-        ctx.save();
-        ctx.strokeStyle = '#d97706'; // Amber
-        ctx.lineWidth = 4;
-        state.kvlPath.forEach(c => {
-            ctx.save();
-            ctx.translate(c.x, c.y);
-            ctx.rotate(c.rotation * Math.PI / 2);
-            // Draw a rectangle around the component
-            ctx.strokeRect(-c.width / 2 - 8, -c.height / 2 - 8, c.width + 16, c.height + 16);
-            ctx.restore();
-        });
-        ctx.restore();
-    }
-};
