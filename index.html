@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="ru">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Интерактивный стенд: Законы Кирхгофа</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+
+<body>
+    <div class="app-container">
+        <header class="app-header">
+            <h1>Законы Кирхгофа</h1>
+            <div class="controls">
+                <button id="btn-run" class="btn primary">Запустить симуляцию</button>
+                <button id="btn-stop" class="btn secondary" disabled>Остановить</button>
+                <button id="btn-clear" class="btn danger">Очистить схему</button>
+            </div>
+        </header>
+
+        <main class="main-content">
+            <aside class="sidebar">
+                <div class="component-palette">
+                    <h3>Компоненты</h3>
+                    <div class="palette-item" draggable="true" data-type="resistor">
+                        <div class="icon resistor-icon"></div>
+                        <span>Резистор</span>
+                    </div>
+                    <div class="palette-item" draggable="true" data-type="voltage">
+                        <div class="icon voltage-icon"></div>
+                        <span>Источник ЭДС</span>
+                    </div>
+                    <!-- Wire is drawn, not dragged, but maybe a mode toggle? -->
+                    <div class="palette-item" id="mode-wire">
+                        <div class="icon wire-icon"></div>
+                        <span>Провод (W)</span>
+                    </div>
+                </div>
+
+                <div class="properties-panel" id="properties-panel">
+                    <h3>Свойства</h3>
+                    <div class="no-selection">Выберите компонент</div>
+                    <div class="properties-content" style="display: none;">
+                        <label>
+                            Сопротивление (Ом):
+                            <input type="number" id="prop-resistance" min="0.1" step="10">
+                        </label>
+                        <label>
+                            Напряжение (В):
+                            <input type="number" id="prop-voltage" step="1">
+                        </label>
+                        <button id="btn-delete-comp" class="btn danger small">Удалить</button>
+                    </div>
+                </div>
+
+                <div class="info-panel">
+                    <h3>Справка</h3>
+                    <p><strong>Редактор:</strong> Перетаскивайте компоненты. Выберите "Провод" и соедините клеммы.
+                        Нажмите R для поворота, Del для удаления.</p>
+                    <p><strong>Симуляция:</strong> Нажмите "Запустить".</p>
+                    <p><strong>1-й закон (KCL):</strong> Наведите на узел во время симуляции, чтобы увидеть сумму токов.
+                    </p>
+                    <p><strong>2-й закон (KVL):</strong> Кликайте на компоненты последовательно, чтобы собрать контур и
+                        увидеть сумму напряжений.</p>
+                </div>
+            </aside>
+
+            <div class="canvas-container">
+                <canvas id="circuit-canvas"></canvas>
+                <div class="overlay-info" id="overlay-info"></div>
+            </div>
+        </main>
+    </div>
+    <script src="script.js"></script>
+</body>
+
+</html>
