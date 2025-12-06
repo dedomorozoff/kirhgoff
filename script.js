@@ -23,6 +23,11 @@ const state = {
     isDrawingWire: false,
     wireStartNode: null,
     wirePath: [], // Array of {x, y} waypoints
+    // Wire editing state
+    isDraggingWaypoint: false,
+    dragWaypointIndex: -1,
+    dragWire: null,
+    autoRoute: true, // Auto orthogonal routing
     kvlPath: [], // List of components selected for KVL loop
     view: { x: 0, y: 0, scale: 1 } // Zoom and Pan
 };
@@ -70,11 +75,22 @@ function getMousePos(evt) {
 class Component {
     constructor(type, x, y) {
         this.id = crypto.randomUUID();
-        this.type = type; // 'resistor', 'voltage'
+        this.type = type; // 'resistor', 'voltage', 'current', 'ammeter', 'voltmeter'
         this.x = x;
         this.y = y;
         this.rotation = 0; // 0, 1, 2, 3 (x90 degrees)
-        this.value = type === 'resistor' ? 100 : 5; // Ohms or Volts
+        
+        // Set default values based on type
+        if (type === 'resistor') {
+            this.value = 100; // Ohms
+        } else if (type === 'voltage') {
+            this.value = 5; // Volts
+        } else if (type === 'current') {
+            this.value = 0.1; // Amperes
+        } else {
+            this.value = 0; // Meters don't have editable values
+        }
+        
         this.width = 60;
         this.height = 20;
         // Terminals (relative to center)
@@ -151,6 +167,88 @@ class Component {
             ctx.font = '12px Inter';
             ctx.textAlign = 'center';
             ctx.fillText(`${this.value}V`, 0, -20);
+        } else if (this.type === 'current') {
+            // Current Source symbol
+            ctx.beginPath();
+            ctx.moveTo(-30, 0);
+            ctx.lineTo(-10, 0);
+            ctx.stroke();
+
+            ctx.beginPath();
+            ctx.moveTo(10, 0);
+            ctx.lineTo(30, 0);
+            ctx.stroke();
+
+            // Circle
+            ctx.beginPath();
+            ctx.arc(0, 0, 10, 0, Math.PI * 2);
+            ctx.stroke();
+
+            // Arrow inside
+            ctx.beginPath();
+            ctx.moveTo(-5, 0);
+            ctx.lineTo(5, 0);
+            ctx.lineTo(2, -3);
+            ctx.moveTo(5, 0);
+            ctx.lineTo(2, 3);
+            ctx.stroke();
+
+            // Text
+            ctx.fillStyle = '#000';
+            ctx.font = '12px Inter';
+            ctx.textAlign = 'center';
+            ctx.fillText(`${this.value}A`, 0, -18);
+        } else if (this.type === 'ammeter') {
+            // Ammeter symbol
+            ctx.beginPath();
+            ctx.moveTo(-30, 0);
+            ctx.lineTo(-12, 0);
+            ctx.stroke();
+
+            ctx.beginPath();
+            ctx.moveTo(12, 0);
+            ctx.lineTo(30, 0);
+            ctx.stroke();
+
+            // Circle
+            ctx.beginPath();
+            ctx.arc(0, 0, 12, 0, Math.PI * 2);
+            ctx.stroke();
+
+            // Letter A
+            ctx.fillStyle = '#000';
+            ctx.font = 'bold 14px Inter';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('A', 0, 0);
+        } else if (this.type === 'voltmeter') {
+            // Voltmeter symbol (parallel connection, different terminals)
+            ctx.beginPath();
+            ctx.arc(0, 0, 15, 0, Math.PI * 2);
+            ctx.stroke();
+
+            // Letter V
+            ctx.fillStyle = '#000';
+            ctx.font = 'bold 14px Inter';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('V', 0, 0);
+
+            // Leads (shorter for parallel connection)
+            ctx.strokeStyle = '#1f2937';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(-15, 0);
+            ctx.lineTo(-25, 0);
+            ctx.moveTo(15, 0);
+            ctx.lineTo(25, 0);
+            ctx.stroke();
+
+            // Override terminals for voltmeter
+            this.terminals = [
+                { x: -25, y: 0 },
+                { x: 25, y: 0 }
+            ];
         }
 
         // Draw terminals
@@ -181,6 +279,28 @@ class Component {
     }
 }
 
+// Helper function for orthogonal wire routing
+function createOrthogonalPath(start, end) {
+    const waypoints = [];
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+
+    // Simple L-shaped routing
+    if (Math.abs(dx) > Math.abs(dy)) {
+        // Horizontal first
+        const midX = start.x + dx / 2;
+        waypoints.push({ x: snapToGrid(midX), y: snapToGrid(start.y) });
+        waypoints.push({ x: snapToGrid(midX), y: snapToGrid(end.y) });
+    } else {
+        // Vertical first
+        const midY = start.y + dy / 2;
+        waypoints.push({ x: snapToGrid(start.x), y: snapToGrid(midY) });
+        waypoints.push({ x: snapToGrid(end.x), y: snapToGrid(midY) });
+    }
+
+    return waypoints;
+}
+
 class Wire {
     constructor(startNode, endNode, waypoints = []) {
         this.startNode = startNode; // {comp, index}
@@ -206,9 +326,58 @@ class Wire {
         ctx.moveTo(start.x, start.y);
         this.waypoints.forEach(p => ctx.lineTo(p.x, p.y));
         ctx.lineTo(end.x, end.y);
-        ctx.strokeStyle = '#1f2937';
-        ctx.lineWidth = 2;
+        ctx.strokeStyle = state.selected === this ? '#2563eb' : '#1f2937';
+        ctx.lineWidth = state.selected === this ? 3 : 2;
         ctx.stroke();
+
+        // Draw waypoints if selected
+        if (state.selected === this) {
+            ctx.fillStyle = '#2563eb';
+            this.waypoints.forEach(p => {
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, 5, 0, Math.PI * 2);
+                ctx.fill();
+            });
+        }
+    }
+
+    hitTest(x, y, threshold = 10) {
+        const start = this.getStartPos();
+        const end = this.getEndPos();
+        const points = [start, ...this.waypoints, end];
+
+        // Check each segment
+        for (let i = 0; i < points.length - 1; i++) {
+            const p1 = points[i];
+            const p2 = points[i + 1];
+            const dist = this.distanceToSegment(x, y, p1.x, p1.y, p2.x, p2.y);
+            if (dist < threshold) return true;
+        }
+        return false;
+    }
+
+    distanceToSegment(px, py, x1, y1, x2, y2) {
+        const dx = x2 - x1;
+        const dy = y2 - y1;
+        const len2 = dx * dx + dy * dy;
+        if (len2 === 0) return Math.hypot(px - x1, py - y1);
+
+        let t = ((px - x1) * dx + (py - y1) * dy) / len2;
+        t = Math.max(0, Math.min(1, t));
+
+        const projX = x1 + t * dx;
+        const projY = y1 + t * dy;
+        return Math.hypot(px - projX, py - projY);
+    }
+
+    getWaypointAt(x, y, threshold = 10) {
+        for (let i = 0; i < this.waypoints.length; i++) {
+            const p = this.waypoints[i];
+            if (Math.hypot(x - p.x, y - p.y) < threshold) {
+                return i;
+            }
+        }
+        return -1;
     }
 }
 
@@ -254,6 +423,65 @@ class LinearAlgebra {
 }
 
 class CircuitSolver {
+    static validate(components, wires) {
+        const errors = [];
+
+        // Check if circuit is empty
+        if (components.length === 0) {
+            errors.push('Схема пуста. Добавьте компоненты.');
+            return errors;
+        }
+
+        // Check if there are any wires
+        if (wires.length === 0) {
+            errors.push('Нет соединений. Добавьте провода между компонентами.');
+            return errors;
+        }
+
+        // Check for isolated components
+        const connectedComps = new Set();
+        wires.forEach(w => {
+            connectedComps.add(w.startNode.comp.id);
+            connectedComps.add(w.endNode.comp.id);
+        });
+
+        const isolated = components.filter(c => !connectedComps.has(c.id));
+        if (isolated.length > 0) {
+            errors.push(`Изолированные компоненты: ${isolated.length} шт. Подключите их к схеме.`);
+        }
+
+        // Check for voltage sources
+        const voltageSources = components.filter(c => c.type === 'voltage');
+        if (voltageSources.length === 0) {
+            errors.push('Нет источников ЭДС. Добавьте хотя бы один источник напряжения.');
+        }
+
+        // Check for load (resistors or meters)
+        const loads = components.filter(c => 
+            c.type === 'resistor' || c.type === 'ammeter' || c.type === 'voltmeter'
+        );
+        if (loads.length === 0) {
+            errors.push('Нет нагрузки. Добавьте хотя бы один резистор или измерительный прибор.');
+        }
+
+        // Check for zero or negative values (skip meters)
+        components.forEach(c => {
+            // Skip measurement devices
+            if (c.type === 'ammeter' || c.type === 'voltmeter') return;
+            
+            if (c.value <= 0) {
+                let name = 'Компонент';
+                if (c.type === 'resistor') name = 'Резистор';
+                else if (c.type === 'voltage') name = 'Источник ЭДС';
+                else if (c.type === 'current') name = 'Источник тока';
+                
+                errors.push(`${name} имеет недопустимое значение: ${c.value}`);
+            }
+        });
+
+        return errors;
+    }
+
     static solve(components, wires) {
         // 1. Identify Nodes
         const nodes = []; // Array of sets of connected terminals/points
@@ -332,10 +560,21 @@ class CircuitSolver {
 
         // Fill G matrix (Conductances)
         components.forEach(c => {
-            if (c.type === 'resistor') {
+            if (c.type === 'resistor' || c.type === 'ammeter' || c.type === 'voltmeter') {
                 const n1 = nodeMap.get(`${c.id}_0`);
                 const n2 = nodeMap.get(`${c.id}_1`);
-                const g = 1 / c.value;
+                
+                // Set resistance based on type
+                let resistance;
+                if (c.type === 'resistor') {
+                    resistance = c.value;
+                } else if (c.type === 'ammeter') {
+                    resistance = 0.001; // Very low resistance (1 mOhm)
+                } else if (c.type === 'voltmeter') {
+                    resistance = 1000000; // Very high resistance (1 MOhm)
+                }
+                
+                const g = 1 / resistance;
 
                 const i1 = getNodeIdx(n1);
                 const i2 = getNodeIdx(n2);
@@ -348,6 +587,24 @@ class CircuitSolver {
                     A[i2][i2] += g;
                     if (i1 !== -1) A[i2][i1] -= g;
                 }
+            }
+        });
+
+        // Add current sources to b vector (KCL equations)
+        const currentSources = components.filter(c => c.type === 'current');
+        currentSources.forEach(cs => {
+            const nPos = nodeMap.get(`${cs.id}_1`); // Current flows from terminal 0 to 1
+            const nNeg = nodeMap.get(`${cs.id}_0`);
+
+            const iPos = getNodeIdx(nPos);
+            const iNeg = getNodeIdx(nNeg);
+
+            // Current source adds to KCL: I flows into positive node, out of negative
+            if (iPos !== -1) {
+                b[iPos] += cs.value;
+            }
+            if (iNeg !== -1) {
+                b[iNeg] -= cs.value;
             }
         });
 
@@ -472,21 +729,40 @@ function draw() {
             });
 
             // Draw Currents
-            if (c.type === 'resistor') {
+            if (c.type === 'resistor' || c.type === 'ammeter' || c.type === 'voltmeter') {
                 const n1 = nodeMap.get(`${c.id}_0`);
                 const n2 = nodeMap.get(`${c.id}_1`);
                 const v1 = nodeVoltages.get(n1);
                 const v2 = nodeVoltages.get(n2);
-                const current = (v1 - v2) / c.value;
+                
+                let resistance;
+                if (c.type === 'resistor') {
+                    resistance = c.value;
+                } else if (c.type === 'ammeter') {
+                    resistance = 0.001;
+                } else if (c.type === 'voltmeter') {
+                    resistance = 1000000;
+                }
+                
+                const current = (v1 - v2) / resistance;
 
                 ctx.save();
                 ctx.translate(c.x, c.y);
                 ctx.rotate(c.rotation * Math.PI / 2);
 
-                ctx.fillStyle = '#dc2626';
-                ctx.fillText(`${Math.abs(current).toFixed(3)}A`, 0, 20);
+                // Show current for resistors and ammeters
+                if (c.type === 'resistor' || c.type === 'ammeter') {
+                    ctx.fillStyle = c.type === 'ammeter' ? '#0369a1' : '#dc2626';
+                    ctx.fillText(`${Math.abs(current).toFixed(3)}A`, 0, 20);
+                }
 
-                if (Math.abs(current) > 1e-6) {
+                // Show voltage for voltmeter
+                if (c.type === 'voltmeter') {
+                    ctx.fillStyle = '#0369a1';
+                    ctx.fillText(`${Math.abs(v1 - v2).toFixed(2)}V`, 0, 20);
+                }
+
+                if (Math.abs(current) > 1e-6 && c.type !== 'voltmeter') {
                     const dir = current > 0 ? 1 : -1;
                     ctx.beginPath();
                     ctx.moveTo(-10 * dir, 5);
@@ -494,10 +770,18 @@ function draw() {
                     ctx.lineTo(5 * dir, 0);
                     ctx.moveTo(10 * dir, 5);
                     ctx.lineTo(5 * dir, 10);
-                    ctx.strokeStyle = '#dc2626';
+                    ctx.strokeStyle = c.type === 'ammeter' ? '#0369a1' : '#dc2626';
                     ctx.stroke();
                 }
 
+                ctx.restore();
+            } else if (c.type === 'current') {
+                // Show current source value
+                ctx.save();
+                ctx.translate(c.x, c.y);
+                ctx.rotate(c.rotation * Math.PI / 2);
+                ctx.fillStyle = '#7c3aed';
+                ctx.fillText(`${c.value.toFixed(3)}A`, 0, 20);
                 ctx.restore();
             }
         });
@@ -506,15 +790,62 @@ function draw() {
     // KVL Path Highlight
     if (state.isSimulating && state.kvlPath.length > 0) {
         ctx.save();
+        
+        // Подсветка компонентов в контуре
         ctx.strokeStyle = '#d97706'; // Amber
         ctx.lineWidth = 4;
-        state.kvlPath.forEach(c => {
+        state.kvlPath.forEach((c, index) => {
             ctx.save();
             ctx.translate(c.x, c.y);
             ctx.rotate(c.rotation * Math.PI / 2);
             ctx.strokeRect(-c.width / 2 - 8, -c.height / 2 - 8, c.width + 16, c.height + 16);
             ctx.restore();
+            
+            // Нумерация компонентов
+            ctx.fillStyle = '#d97706';
+            ctx.font = 'bold 16px Inter';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(`${index + 1}`, c.x, c.y - 40);
         });
+        
+        // Стрелки направления обхода между компонентами
+        if (state.kvlPath.length > 1) {
+            ctx.strokeStyle = '#d97706';
+            ctx.fillStyle = '#d97706';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([5, 5]);
+            
+            for (let i = 0; i < state.kvlPath.length; i++) {
+                const current = state.kvlPath[i];
+                const next = state.kvlPath[(i + 1) % state.kvlPath.length];
+                
+                // Линия от текущего к следующему
+                ctx.beginPath();
+                ctx.moveTo(current.x, current.y);
+                ctx.lineTo(next.x, next.y);
+                ctx.stroke();
+                
+                // Стрелка в середине линии
+                const midX = (current.x + next.x) / 2;
+                const midY = (current.y + next.y) / 2;
+                const angle = Math.atan2(next.y - current.y, next.x - current.x);
+                
+                ctx.save();
+                ctx.translate(midX, midY);
+                ctx.rotate(angle);
+                ctx.beginPath();
+                ctx.moveTo(0, 0);
+                ctx.lineTo(-10, -5);
+                ctx.lineTo(-10, 5);
+                ctx.closePath();
+                ctx.fill();
+                ctx.restore();
+            }
+            
+            ctx.setLineDash([]);
+        }
+        
         ctx.restore();
     }
 
@@ -573,6 +904,40 @@ canvas.addEventListener('wheel', (e) => {
     draw();
 }, { passive: false });
 
+// Zoom buttons
+document.getElementById('btn-zoom-in').addEventListener('click', () => {
+    const centerX = canvas.width / 2;
+    const centerY = canvas.height / 2;
+    const worldX = (centerX - state.view.x) / state.view.scale;
+    const worldY = (centerY - state.view.y) / state.view.scale;
+    
+    const newScale = Math.min(state.view.scale * 1.2, 5);
+    state.view.scale = newScale;
+    state.view.x = centerX - worldX * state.view.scale;
+    state.view.y = centerY - worldY * state.view.scale;
+    draw();
+});
+
+document.getElementById('btn-zoom-out').addEventListener('click', () => {
+    const centerX = canvas.width / 2;
+    const centerY = canvas.height / 2;
+    const worldX = (centerX - state.view.x) / state.view.scale;
+    const worldY = (centerY - state.view.y) / state.view.scale;
+    
+    const newScale = Math.max(state.view.scale / 1.2, 0.1);
+    state.view.scale = newScale;
+    state.view.x = centerX - worldX * state.view.scale;
+    state.view.y = centerY - worldY * state.view.scale;
+    draw();
+});
+
+document.getElementById('btn-zoom-reset').addEventListener('click', () => {
+    state.view.scale = 1;
+    state.view.x = 0;
+    state.view.y = 0;
+    draw();
+});
+
 function getHoveredTerminal(x, y) {
     for (const comp of state.components) {
         const terminals = comp.getTerminalsWorld();
@@ -606,6 +971,11 @@ document.getElementById('mode-wire').addEventListener('click', () => {
     draw();
 });
 
+// Auto-route toggle
+document.getElementById('auto-route').addEventListener('change', (e) => {
+    state.autoRoute = e.target.checked;
+});
+
 canvas.addEventListener('dragover', (e) => {
     e.preventDefault();
 });
@@ -620,34 +990,86 @@ canvas.addEventListener('drop', (e) => {
     draw();
 });
 
-// Selection & Properties
-const propsPanel = document.getElementById('properties-panel');
-const noSelection = propsPanel.querySelector('.no-selection');
-const propsContent = propsPanel.querySelector('.properties-content');
+// Selection & Properties - Bottom Panel
+const componentProps = document.getElementById('component-props');
+const compTypeLabel = document.getElementById('comp-type-label');
+const resistanceInput = document.getElementById('resistance-input');
+const voltageInput = document.getElementById('voltage-input');
+const currentInput = document.getElementById('current-input');
 const propRes = document.getElementById('prop-resistance');
 const propVolt = document.getElementById('prop-voltage');
+const propCurrent = document.getElementById('prop-current');
+const meterReading = document.getElementById('meter-reading');
+const meterValue = document.getElementById('meter-value');
+const divider1 = document.getElementById('divider-1');
+const helpText = document.getElementById('help-text');
 
 function selectComponent(comp) {
     state.selected = comp;
+    
     if (comp) {
-        noSelection.style.display = 'none';
-        propsContent.style.display = 'block';
+        componentProps.style.display = 'flex';
+        divider1.style.display = 'block';
+        
+        // Hide all inputs first
+        resistanceInput.style.display = 'none';
+        voltageInput.style.display = 'none';
+        currentInput.style.display = 'none';
+        meterReading.style.display = 'none';
 
-        // Update inputs
-        if (comp.type === 'resistor') {
-            propRes.parentElement.style.display = 'block';
-            propVolt.parentElement.style.display = 'none';
+        // Update inputs based on type
+        if (comp instanceof Wire) {
+            compTypeLabel.textContent = 'Провод';
+        } else if (comp.type === 'resistor') {
+            compTypeLabel.textContent = 'Резистор:';
+            resistanceInput.style.display = 'flex';
             propRes.value = comp.value;
         } else if (comp.type === 'voltage') {
-            propRes.parentElement.style.display = 'none';
-            propVolt.parentElement.style.display = 'block';
+            compTypeLabel.textContent = 'Источник ЭДС:';
+            voltageInput.style.display = 'flex';
             propVolt.value = comp.value;
+        } else if (comp.type === 'current') {
+            compTypeLabel.textContent = 'Источник тока:';
+            currentInput.style.display = 'flex';
+            propCurrent.value = comp.value;
+        } else if (comp.type === 'ammeter') {
+            compTypeLabel.textContent = 'Амперметр:';
+            if (state.isSimulating && state.simulationResult) {
+                meterReading.style.display = 'flex';
+                updateMeterReading(comp);
+            }
+        } else if (comp.type === 'voltmeter') {
+            compTypeLabel.textContent = 'Вольтметр:';
+            if (state.isSimulating && state.simulationResult) {
+                meterReading.style.display = 'flex';
+                updateMeterReading(comp);
+            }
         }
     } else {
-        noSelection.style.display = 'block';
-        propsContent.style.display = 'none';
+        componentProps.style.display = 'none';
+        divider1.style.display = 'none';
     }
     draw();
+}
+
+function updateMeterReading(meter) {
+    if (!state.simulationResult) return;
+    
+    if (meter.type === 'ammeter') {
+        const n1 = state.simulationResult.nodeMap.get(`${meter.id}_0`);
+        const n2 = state.simulationResult.nodeMap.get(`${meter.id}_1`);
+        const v1 = state.simulationResult.nodeVoltages.get(n1);
+        const v2 = state.simulationResult.nodeVoltages.get(n2);
+        const current = (v1 - v2) / 0.001;
+        meterValue.textContent = `${Math.abs(current).toFixed(3)} А`;
+    } else if (meter.type === 'voltmeter') {
+        const n1 = state.simulationResult.nodeMap.get(`${meter.id}_0`);
+        const n2 = state.simulationResult.nodeMap.get(`${meter.id}_1`);
+        const v1 = state.simulationResult.nodeVoltages.get(n1);
+        const v2 = state.simulationResult.nodeVoltages.get(n2);
+        const voltage = Math.abs(v1 - v2);
+        meterValue.textContent = `${voltage.toFixed(2)} В`;
+    }
 }
 
 // Canvas Mouse Events
@@ -677,7 +1099,18 @@ canvas.addEventListener('mousedown', (e) => {
             if (term) {
                 // Clicked on a terminal - finish wire
                 if (term.comp !== state.wireStartNode.comp || term.index !== state.wireStartNode.index) {
-                    state.wires.push(new Wire(state.wireStartNode, term, [...state.wirePath]));
+                    let finalPath = [...state.wirePath];
+                    
+                    // Apply auto-routing if enabled and no manual waypoints
+                    if (state.autoRoute && finalPath.length === 0) {
+                        const startTerminals = state.wireStartNode.comp.getTerminalsWorld();
+                        const startPos = startTerminals[state.wireStartNode.index];
+                        const endTerminals = term.comp.getTerminalsWorld();
+                        const endPos = endTerminals[term.index];
+                        finalPath = createOrthogonalPath(startPos, endPos);
+                    }
+                    
+                    state.wires.push(new Wire(state.wireStartNode, term, finalPath));
                 }
                 // Reset
                 state.isDrawingWire = false;
@@ -691,6 +1124,18 @@ canvas.addEventListener('mousedown', (e) => {
         draw();
     } else {
         // Select mode
+        // Check if clicking on a waypoint of selected wire
+        if (state.selected && state.selected instanceof Wire) {
+            const wpIndex = state.selected.getWaypointAt(pos.x, pos.y);
+            if (wpIndex !== -1) {
+                state.isDraggingWaypoint = true;
+                state.dragWaypointIndex = wpIndex;
+                state.dragWire = state.selected;
+                return;
+            }
+        }
+
+        // Check components first
         const clickedComp = state.components.find(c => c.hitTest(pos.x, pos.y));
 
         if (clickedComp) {
@@ -698,7 +1143,13 @@ canvas.addEventListener('mousedown', (e) => {
             state.isDragging = true;
             state.dragComponent = clickedComp;
         } else {
-            selectComponent(null);
+            // Check wires
+            const clickedWire = state.wires.find(w => w.hitTest(pos.x, pos.y));
+            if (clickedWire) {
+                selectComponent(clickedWire);
+            } else {
+                selectComponent(null);
+            }
         }
     }
 });
@@ -726,14 +1177,28 @@ canvas.addEventListener('mousemove', (e) => {
         if (state.isDrawingWire) {
             draw();
         }
+    } else if (state.isDraggingWaypoint && state.dragWire) {
+        // Drag waypoint
+        state.dragWire.waypoints[state.dragWaypointIndex].x = snapToGrid(pos.x);
+        state.dragWire.waypoints[state.dragWaypointIndex].y = snapToGrid(pos.y);
+        draw();
     } else if (state.isDragging && state.dragComponent) {
         state.dragComponent.x = snapToGrid(pos.x);
         state.dragComponent.y = snapToGrid(pos.y);
         draw();
     } else {
-        // Hover effect for components
+        // Hover effect
+        if (state.selected && state.selected instanceof Wire) {
+            const wpIndex = state.selected.getWaypointAt(pos.x, pos.y);
+            if (wpIndex !== -1) {
+                canvas.style.cursor = 'grab';
+                return;
+            }
+        }
+        
         const hoveredComp = state.components.find(c => c.hitTest(pos.x, pos.y));
-        canvas.style.cursor = hoveredComp ? 'move' : 'default';
+        const hoveredWire = !hoveredComp ? state.wires.find(w => w.hitTest(pos.x, pos.y)) : null;
+        canvas.style.cursor = hoveredComp ? 'move' : (hoveredWire ? 'pointer' : 'default');
     }
 });
 
@@ -746,6 +1211,9 @@ canvas.addEventListener('mouseup', (e) => {
     const pos = getMousePos(e);
     state.isDragging = false;
     state.dragComponent = null;
+    state.isDraggingWaypoint = false;
+    state.dragWaypointIndex = -1;
+    state.dragWire = null;
 
     // Note: Wire creation is now handled in mousedown (click-click interaction)
 });
@@ -760,6 +1228,13 @@ propRes.addEventListener('change', (e) => {
 
 propVolt.addEventListener('change', (e) => {
     if (state.selected && state.selected.type === 'voltage') {
+        state.selected.value = parseFloat(e.target.value);
+        draw();
+    }
+});
+
+propCurrent.addEventListener('change', (e) => {
+    if (state.selected && state.selected.type === 'current') {
         state.selected.value = parseFloat(e.target.value);
         draw();
     }
@@ -790,15 +1265,31 @@ document.getElementById('btn-clear').addEventListener('click', () => {
 window.addEventListener('keydown', (e) => {
     if (e.key === 'Delete' || e.key === 'Backspace') {
         if (state.selected) {
-            state.wires = state.wires.filter(w => w.startNode.comp !== state.selected && w.endNode.comp !== state.selected);
-            state.components = state.components.filter(c => c !== state.selected);
+            if (state.selected instanceof Wire) {
+                // Delete wire
+                state.wires = state.wires.filter(w => w !== state.selected);
+            } else {
+                // Delete component and connected wires
+                state.wires = state.wires.filter(w => w.startNode.comp !== state.selected && w.endNode.comp !== state.selected);
+                state.components = state.components.filter(c => c !== state.selected);
+            }
             selectComponent(null);
             draw();
         }
     }
     if (e.key === 'r' || e.key === 'R') {
-        if (state.selected) {
+        if (state.selected && state.selected.rotation !== undefined) {
             state.selected.rotation = (state.selected.rotation + 1) % 4;
+            draw();
+        }
+    }
+    if (e.key === 'w' || e.key === 'W') {
+        if (state.mode === 'select') {
+            state.mode = 'wire';
+            state.selected = null;
+            state.isDrawingWire = false;
+            state.wireStartNode = null;
+            state.wirePath = [];
             draw();
         }
     }
@@ -819,6 +1310,13 @@ const btnStop = document.getElementById('btn-stop');
 const overlayInfo = document.getElementById('overlay-info');
 
 btnRun.addEventListener('click', () => {
+    // Validate circuit first
+    const errors = CircuitSolver.validate(state.components, state.wires);
+    if (errors.length > 0) {
+        showErrorModal(errors);
+        return;
+    }
+
     try {
         const result = CircuitSolver.solve(state.components, state.wires);
         state.simulationResult = result;
@@ -826,6 +1324,7 @@ btnRun.addEventListener('click', () => {
 
         btnRun.disabled = true;
         btnStop.disabled = false;
+        document.getElementById('btn-clear-loop').disabled = false;
 
         // Disable editing during simulation
         canvas.style.pointerEvents = 'none'; // Simple lock
@@ -833,7 +1332,7 @@ btnRun.addEventListener('click', () => {
         draw();
         updateOverlay();
     } catch (e) {
-        alert('Ошибка симуляции: ' + e.message);
+        showErrorModal([`Ошибка расчета: ${e.message}`, 'Проверьте правильность схемы и значения компонентов.']);
         console.error(e);
     }
 });
@@ -841,12 +1340,20 @@ btnRun.addEventListener('click', () => {
 btnStop.addEventListener('click', () => {
     state.isSimulating = false;
     state.simulationResult = null;
+    state.kvlPath = [];
 
     btnRun.disabled = false;
     btnStop.disabled = true;
+    document.getElementById('btn-clear-loop').disabled = true;
 
     canvas.style.pointerEvents = 'auto';
     overlayInfo.innerHTML = '';
+    draw();
+});
+
+document.getElementById('btn-clear-loop').addEventListener('click', () => {
+    state.kvlPath = [];
+    updateOverlay();
     draw();
 });
 
@@ -859,6 +1366,11 @@ function updateOverlay() {
         html += `Узел ${k}: ${v.toFixed(2)} В<br>`;
     });
     overlayInfo.innerHTML = html;
+    
+    // Update meter reading if meter is selected
+    if (state.selected && (state.selected.type === 'ammeter' || state.selected.type === 'voltmeter')) {
+        updateMeterReading(state.selected);
+    }
 }
 
 // --- Educational Tools (KCL/KVL) ---
@@ -983,8 +1495,9 @@ function updateKVLOverlay() {
 
     let sumV = 0;
     let html = `<strong>Контур (KVL):</strong><br>`;
+    html += `<small>Компоненты в контуре (по порядку обхода):</small><br>`;
 
-    state.kvlPath.forEach(c => {
+    state.kvlPath.forEach((c, index) => {
         let vDrop = 0;
         const n1 = state.simulationResult.nodeMap.get(`${c.id}_0`);
         const n2 = state.simulationResult.nodeMap.get(`${c.id}_1`);
@@ -993,10 +1506,255 @@ function updateKVLOverlay() {
 
         vDrop = v1 - v2; // Drop from 0 to 1
 
-        const name = c.type === 'resistor' ? 'R' : 'E';
-        html += `${name}: ${vDrop.toFixed(2)} В<br>`;
+        // Для источника ЭДС учитываем знак в зависимости от направления обхода
+        if (c.type === 'voltage') {
+            // Если обходим от + к -, то ЭДС положительна
+            sumV += vDrop;
+        } else {
+            // Для резистора падение напряжения вычитается
+            sumV += vDrop;
+        }
+
+        const name = c.type === 'resistor' ? `R${index + 1}` : `E${index + 1}`;
+        const arrow = vDrop >= 0 ? '→' : '←';
+        html += `${name}: ${vDrop.toFixed(2)} В ${arrow}<br>`;
     });
 
-    html += `<small>Выберите компоненты по порядку</small>`;
+    html += `<hr style="margin: 8px 0; border: none; border-top: 1px solid #ccc;">`;
+    html += `<strong>Σ U = ${sumV.toFixed(4)} В</strong><br>`;
+    
+    // Проверка выполнения второго закона Кирхгофа
+    const isValid = Math.abs(sumV) < 0.01; // Погрешность 10 мВ
+    if (isValid) {
+        html += `<span style="color: #059669;">✓ Второй закон Кирхгофа выполнен</span><br>`;
+    } else {
+        html += `<span style="color: #dc2626;">⚠ Контур незамкнут или выбран неверно</span><br>`;
+    }
+    
+    html += `<small style="color: #6b7280;">Кликните на пустое место для сброса</small>`;
     overlayInfo.innerHTML = html;
 }
+
+
+// --- Error Modal ---
+const errorModal = document.getElementById('error-modal');
+const errorList = document.getElementById('error-list');
+const modalClose = document.getElementById('modal-close');
+const modalOk = document.getElementById('modal-ok');
+
+function showErrorModal(errors) {
+    let html = '<ul>';
+    errors.forEach(err => {
+        html += `<li>${err}</li>`;
+    });
+    html += '</ul>';
+    errorList.innerHTML = html;
+    errorModal.style.display = 'flex';
+}
+
+function hideErrorModal() {
+    errorModal.style.display = 'none';
+}
+
+modalClose.addEventListener('click', hideErrorModal);
+modalOk.addEventListener('click', hideErrorModal);
+
+// Close modal on outside click
+errorModal.addEventListener('click', (e) => {
+    if (e.target === errorModal) {
+        hideErrorModal();
+    }
+});
+
+// Close modal on Escape key
+window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && errorModal.style.display === 'flex') {
+        hideErrorModal();
+    }
+});
+
+
+// --- Save/Load Circuit ---
+const btnSave = document.getElementById('btn-save');
+const btnLoad = document.getElementById('btn-load');
+const fileInput = document.getElementById('file-input');
+
+function serializeCircuit() {
+    return {
+        version: '1.1',
+        components: state.components.map(c => ({
+            id: c.id,
+            type: c.type,
+            x: c.x,
+            y: c.y,
+            rotation: c.rotation,
+            value: c.value
+        })),
+        wires: state.wires.map(w => ({
+            startNode: {
+                compId: w.startNode.comp.id,
+                index: w.startNode.index
+            },
+            endNode: {
+                compId: w.endNode.comp.id,
+                index: w.endNode.index
+            },
+            waypoints: w.waypoints
+        }))
+    };
+}
+
+function deserializeCircuit(data) {
+    // Clear current circuit
+    state.components = [];
+    state.wires = [];
+    state.selected = null;
+    selectComponent(null);
+
+    // Restore components
+    const compMap = new Map();
+    data.components.forEach(cData => {
+        const comp = new Component(cData.type, cData.x, cData.y);
+        comp.id = cData.id;
+        comp.rotation = cData.rotation;
+        comp.value = cData.value;
+        state.components.push(comp);
+        compMap.set(comp.id, comp);
+    });
+
+    // Restore wires
+    data.wires.forEach(wData => {
+        const startComp = compMap.get(wData.startNode.compId);
+        const endComp = compMap.get(wData.endNode.compId);
+        if (startComp && endComp) {
+            const wire = new Wire(
+                { comp: startComp, index: wData.startNode.index },
+                { comp: endComp, index: wData.endNode.index },
+                wData.waypoints
+            );
+            state.wires.push(wire);
+        }
+    });
+
+    draw();
+}
+
+btnSave.addEventListener('click', () => {
+    const data = serializeCircuit();
+    const json = JSON.stringify(data, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `circuit_${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+});
+
+btnLoad.addEventListener('click', () => {
+    fileInput.click();
+});
+
+fileInput.addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+        try {
+            const data = JSON.parse(event.target.result);
+            deserializeCircuit(data);
+        } catch (err) {
+            showErrorModal(['Ошибка загрузки файла', 'Файл поврежден или имеет неверный формат.']);
+            console.error(err);
+        }
+    };
+    reader.readAsText(file);
+    fileInput.value = ''; // Reset input
+});
+
+// Auto-save to localStorage
+function autoSave() {
+    try {
+        const data = serializeCircuit();
+        localStorage.setItem('circuit_autosave', JSON.stringify(data));
+    } catch (e) {
+        console.warn('Auto-save failed:', e);
+    }
+}
+
+function autoLoad() {
+    try {
+        const saved = localStorage.getItem('circuit_autosave');
+        if (saved) {
+            const data = JSON.parse(saved);
+            if (data.components && data.components.length > 0) {
+                // Ask user if they want to restore
+                if (confirm('Найдено автосохранение. Восстановить схему?')) {
+                    deserializeCircuit(data);
+                }
+            }
+        }
+    } catch (e) {
+        console.warn('Auto-load failed:', e);
+    }
+}
+
+// Auto-save every 30 seconds
+setInterval(autoSave, 30000);
+
+// Load on startup
+window.addEventListener('load', () => {
+    autoLoad();
+});
+
+
+// --- Examples Library ---
+const btnExamples = document.getElementById('btn-examples');
+const examplesModal = document.getElementById('examples-modal');
+const examplesList = document.getElementById('examples-list');
+const examplesClose = document.getElementById('examples-close');
+
+function showExamplesModal() {
+    let html = '';
+    for (const [key, example] of Object.entries(EXAMPLES)) {
+        html += `
+            <div class="example-item" data-example="${key}">
+                <h4>${example.name}</h4>
+                <p>${example.description}</p>
+            </div>
+        `;
+    }
+    examplesList.innerHTML = html;
+    
+    // Add click handlers
+    document.querySelectorAll('.example-item').forEach(item => {
+        item.addEventListener('click', () => {
+            const key = item.dataset.example;
+            loadExample(key);
+            hideExamplesModal();
+        });
+    });
+    
+    examplesModal.style.display = 'flex';
+}
+
+function hideExamplesModal() {
+    examplesModal.style.display = 'none';
+}
+
+function loadExample(key) {
+    const example = EXAMPLES[key];
+    if (example) {
+        deserializeCircuit(example.data);
+    }
+}
+
+btnExamples.addEventListener('click', showExamplesModal);
+examplesClose.addEventListener('click', hideExamplesModal);
+
+examplesModal.addEventListener('click', (e) => {
+    if (e.target === examplesModal) {
+        hideExamplesModal();
+    }
+});
