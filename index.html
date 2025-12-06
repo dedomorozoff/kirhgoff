@@ -40,6 +40,10 @@
                     <i data-lucide="square"></i>
                     <span>Остановить</span>
                 </button>
+                <button id="btn-show-equations" class="btn secondary" disabled title="Показать уравнения">
+                    <i data-lucide="sigma"></i>
+                    <span>Уравнения</span>
+                </button>
                 <button id="btn-clear-loop" class="btn secondary" disabled>
                     <i data-lucide="eraser"></i>
                     <span>Очистить контур</span>
@@ -82,6 +86,9 @@
                     </div>
                     <div class="palette-item" draggable="true" data-type="voltmeter" title="PV - Вольтметр">
                         <div class="icon voltmeter-icon"></div>
+                    </div>
+                    <div class="palette-item" draggable="true" data-type="junction" title="Узел соединения">
+                        <div class="icon junction-icon"></div>
                     </div>
                     <!-- Wire is drawn, not dragged, but maybe a mode toggle? -->
                     <div class="palette-item" id="mode-wire" title="Провод (клавиша W)">
@@ -150,6 +157,29 @@
                 <button class="modal-close" id="examples-close">&times;</button>
             </div>
             <div class="modal-body" id="examples-list"></div>
+        </div>
+    </div>
+
+    <!-- Equations Modal -->
+    <div id="equations-modal" class="modal" style="display: none;">
+        <div class="modal-content" style="max-width: 900px;">
+            <div class="modal-header">
+                <h3>📐 Уравнения цепи</h3>
+                <button class="modal-close" id="equations-close">&times;</button>
+            </div>
+            <div style="display: flex; gap: 0.5rem; padding: 0 20px; border-bottom: 1px solid var(--border-color);">
+                <button class="tab-btn active" data-tab="mna">MNA</button>
+                <button class="tab-btn" data-tab="kcl">1-й закон (KCL)</button>
+                <button class="tab-btn" data-tab="kvl">2-й закон (KVL)</button>
+            </div>
+            <div class="modal-body" style="font-family: 'Courier New', monospace; font-size: 0.9em;">
+                <div id="tab-mna" class="tab-content active"></div>
+                <div id="tab-kcl" class="tab-content" style="display: none;"></div>
+                <div id="tab-kvl" class="tab-content" style="display: none;"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn secondary" id="equations-ok">Закрыть</button>
+            </div>
         </div>
     </div>
 

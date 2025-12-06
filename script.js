@@ -79,10 +79,11 @@ function getMousePos(evt) {
 class Component {
     constructor(type, x, y) {
         this.id = crypto.randomUUID();
-        this.type = type; // 'resistor', 'voltage', 'current', 'ammeter', 'voltmeter'
+        this.type = type; // 'resistor', 'voltage', 'current', 'ammeter', 'voltmeter', 'junction'
         this.x = x;
         this.y = y;
         this.rotation = 0; // 0, 1, 2, 3 (x90 degrees)
+        this.label = ''; // Will be set when added to circuit
         
         // Set default values based on type
         if (type === 'resistor') {
@@ -97,11 +98,24 @@ class Component {
         
         this.width = 60;
         this.height = 20;
+        
         // Terminals (relative to center)
-        this.terminals = [
-            { x: -30, y: 0 },
-            { x: 30, y: 0 }
-        ];
+        if (type === 'junction') {
+            // Junction has 4 terminals (cross)
+            this.terminals = [
+                { x: 0, y: 0 },   // Center (main)
+                { x: 0, y: 0 },   // Can connect multiple wires
+                { x: 0, y: 0 },
+                { x: 0, y: 0 }
+            ];
+            this.width = 10;
+            this.height = 10;
+        } else {
+            this.terminals = [
+                { x: -30, y: 0 },
+                { x: 30, y: 0 }
+            ];
+        }
     }
 
     draw(ctx) {
@@ -135,11 +149,14 @@ class Component {
             ctx.lineTo(30, 0);
             ctx.stroke();
 
-            // Text
+            // Label and value
             ctx.fillStyle = '#000';
-            ctx.font = '12px Inter';
+            ctx.font = 'bold 11px Inter';
             ctx.textAlign = 'center';
-            ctx.fillText(`${this.value} Ом`, 0, -15);
+            ctx.fillText(this.label || 'R', 0, -25);
+            ctx.font = '10px Inter';
+            ctx.fillStyle = '#6b7280';
+            ctx.fillText(`${this.value} Ом`, 0, -13);
         } else if (this.type === 'voltage') {
             // DC Source symbol
             ctx.beginPath();
@@ -166,11 +183,14 @@ class Component {
             ctx.lineWidth = 3;
             ctx.stroke();
 
-            // Text
+            // Label and value
             ctx.fillStyle = '#000';
-            ctx.font = '12px Inter';
+            ctx.font = 'bold 11px Inter';
             ctx.textAlign = 'center';
-            ctx.fillText(`${this.value}V`, 0, -20);
+            ctx.fillText(this.label || 'E', 0, -28);
+            ctx.font = '10px Inter';
+            ctx.fillStyle = '#6b7280';
+            ctx.fillText(`${this.value} В`, 0, -17);
         } else if (this.type === 'current') {
             // Current Source symbol
             ctx.beginPath();
@@ -197,11 +217,14 @@ class Component {
             ctx.lineTo(2, 3);
             ctx.stroke();
 
-            // Text
+            // Label and value
             ctx.fillStyle = '#000';
-            ctx.font = '12px Inter';
+            ctx.font = 'bold 11px Inter';
             ctx.textAlign = 'center';
-            ctx.fillText(`${this.value}A`, 0, -18);
+            ctx.fillText(this.label || 'J', 0, -23);
+            ctx.font = '10px Inter';
+            ctx.fillStyle = '#6b7280';
+            ctx.fillText(`${this.value} А`, 0, 30);
         } else if (this.type === 'ammeter') {
             // Ammeter symbol
             ctx.beginPath();
@@ -253,14 +276,33 @@ class Component {
                 { x: -25, y: 0 },
                 { x: 25, y: 0 }
             ];
+        } else if (this.type === 'junction') {
+            // Junction node - just a dot
+            ctx.fillStyle = '#1f2937';
+            ctx.beginPath();
+            ctx.arc(0, 0, 5, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // Highlight if selected
+            if (state.selected === this) {
+                ctx.strokeStyle = '#2563eb';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.arc(0, 0, 8, 0, Math.PI * 2);
+                ctx.stroke();
+            }
+            
+
         }
 
-        // Draw terminals
-        ctx.fillStyle = '#ef4444';
-        for (const t of this.terminals) {
-            ctx.beginPath();
-            ctx.arc(t.x, t.y, 3, 0, Math.PI * 2);
-            ctx.fill();
+        // Draw terminals (skip for junction as it's just a point)
+        if (this.type !== 'junction') {
+            ctx.fillStyle = '#ef4444';
+            for (const t of this.terminals) {
+                ctx.beginPath();
+                ctx.arc(t.x, t.y, 3, 0, Math.PI * 2);
+                ctx.fill();
+            }
         }
 
         ctx.restore();
@@ -289,17 +331,23 @@ function createOrthogonalPath(start, end) {
     const dx = end.x - start.x;
     const dy = end.y - start.y;
 
-    // Simple L-shaped routing
+    // Only create waypoints if not already aligned
+    if (Math.abs(dx) < 5) {
+        // Already vertical
+        return waypoints;
+    }
+    if (Math.abs(dy) < 5) {
+        // Already horizontal
+        return waypoints;
+    }
+
+    // L-shaped routing with single corner
     if (Math.abs(dx) > Math.abs(dy)) {
-        // Horizontal first
-        const midX = start.x + dx / 2;
-        waypoints.push({ x: snapToGrid(midX), y: snapToGrid(start.y) });
-        waypoints.push({ x: snapToGrid(midX), y: snapToGrid(end.y) });
+        // Horizontal first, then vertical
+        waypoints.push({ x: snapToGrid(end.x), y: snapToGrid(start.y) });
     } else {
-        // Vertical first
-        const midY = start.y + dy / 2;
-        waypoints.push({ x: snapToGrid(start.x), y: snapToGrid(midY) });
-        waypoints.push({ x: snapToGrid(end.x), y: snapToGrid(midY) });
+        // Vertical first, then horizontal
+        waypoints.push({ x: snapToGrid(start.x), y: snapToGrid(end.y) });
     }
 
     return waypoints;
@@ -470,8 +518,8 @@ class CircuitSolver {
 
         // Check for zero or negative values (skip meters)
         components.forEach(c => {
-            // Skip measurement devices
-            if (c.type === 'ammeter' || c.type === 'voltmeter') return;
+            // Skip measurement devices and junctions
+            if (c.type === 'ammeter' || c.type === 'voltmeter' || c.type === 'junction') return;
             
             if (c.value <= 0) {
                 let name = 'Компонент';
@@ -649,7 +697,19 @@ class CircuitSolver {
             sourceCurrents.set(vs.id, x[(numNodes - 1) + k]);
         });
 
-        return { nodeVoltages, nodeMap, sourceCurrents };
+        return { 
+            nodeVoltages, 
+            nodeMap, 
+            sourceCurrents,
+            // For equations display
+            matrix: A,
+            vector: b,
+            solution: x,
+            numNodes,
+            numVSources,
+            components,
+            voltageSources
+        };
     }
 }
 
@@ -713,12 +773,93 @@ function draw() {
     // Components
     state.components.forEach(c => c.draw(ctx));
 
+    // Draw junction labels on top of everything
+    state.components.forEach(c => {
+        if (c.type === 'junction' && c.label) {
+            ctx.save();
+            ctx.translate(c.x, c.y);
+            
+            ctx.font = 'bold 12px Inter';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            
+            const text = c.label;
+            const metrics = ctx.measureText(text);
+            const padding = 3;
+            const posY = -15;
+            
+            // Background
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
+            ctx.fillRect(-metrics.width/2 - padding, posY - 7, metrics.width + padding*2, 14);
+            
+            // Border
+            ctx.strokeStyle = '#e5e7eb';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(-metrics.width/2 - padding, posY - 7, metrics.width + padding*2, 14);
+            
+            // Text
+            ctx.fillStyle = '#000';
+            ctx.fillText(text, 0, posY);
+            
+            ctx.restore();
+        }
+    });
+
     // Simulation Overlays
     if (state.isSimulating && state.simulationResult) {
         const { nodeVoltages, nodeMap, sourceCurrents } = state.simulationResult;
 
-        ctx.font = '10px monospace';
-        ctx.fillStyle = '#059669';
+        // Calculate node positions (center of all terminals in node)
+        const nodePositions = new Map();
+        const nodeTerminalCounts = new Map();
+        
+        state.components.forEach(c => {
+            const terminals = c.getTerminalsWorld();
+            terminals.forEach((t, i) => {
+                const nodeId = `${c.id}_${i}`;
+                const nodeIdx = nodeMap.get(nodeId);
+                
+                if (!nodePositions.has(nodeIdx)) {
+                    nodePositions.set(nodeIdx, { x: 0, y: 0 });
+                    nodeTerminalCounts.set(nodeIdx, 0);
+                }
+                
+                const pos = nodePositions.get(nodeIdx);
+                pos.x += t.x;
+                pos.y += t.y;
+                nodeTerminalCounts.set(nodeIdx, nodeTerminalCounts.get(nodeIdx) + 1);
+            });
+        });
+        
+        // Average positions
+        nodePositions.forEach((pos, nodeIdx) => {
+            const count = nodeTerminalCounts.get(nodeIdx);
+            pos.x /= count;
+            pos.y /= count;
+        });
+        
+        // Draw node labels at center positions
+        ctx.font = 'bold 12px Inter';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        
+        nodePositions.forEach((pos, nodeIdx) => {
+            // Only draw if node has more than one connection (is a junction)
+            if (nodeTerminalCounts.get(nodeIdx) > 1) {
+                // Draw node circle and label
+                ctx.fillStyle = nodeIdx === 0 ? '#6b7280' : '#2563eb';
+                ctx.beginPath();
+                ctx.arc(pos.x, pos.y, 10, 0, Math.PI * 2);
+                ctx.fill();
+                
+                ctx.fillStyle = '#ffffff';
+                ctx.fillText(nodeIdx.toString(), pos.x, pos.y);
+            }
+        });
+
+        ctx.font = 'bold 10px Inter';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
 
         state.components.forEach(c => {
             const terminals = c.getTerminalsWorld();
@@ -728,7 +869,35 @@ function draw() {
                 const voltage = nodeVoltages.get(nodeIdx);
 
                 if (voltage !== undefined) {
-                    ctx.fillText(`${voltage.toFixed(1)}V`, t.x + 5, t.y - 5);
+                    // Calculate offset - always away from component center
+                    const dx = t.x - c.x;
+                    const dy = t.y - c.y;
+                    const dist = Math.sqrt(dx*dx + dy*dy);
+                    
+                    // Offset in the direction away from component
+                    let offsetX = 0;
+                    let offsetY = -25;
+                    
+                    if (dist > 0) {
+                        // Extend in the same direction as terminal
+                        offsetX = (dx / dist) * 25;
+                        offsetY = (dy / dist) * 25;
+                    }
+                    
+                    const text = `${voltage.toFixed(1)}V`;
+                    const metrics = ctx.measureText(text);
+                    const padding = 3;
+                    const posX = t.x + offsetX;
+                    const posY = t.y + offsetY;
+                    
+                    ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
+                    ctx.strokeStyle = '#e5e7eb';
+                    ctx.lineWidth = 1;
+                    ctx.fillRect(posX - metrics.width/2 - padding, posY - 7, metrics.width + padding*2, 14);
+                    ctx.strokeRect(posX - metrics.width/2 - padding, posY - 7, metrics.width + padding*2, 14);
+                    
+                    ctx.fillStyle = '#059669';
+                    ctx.fillText(text, posX, posY);
                 }
             });
 
@@ -757,25 +926,41 @@ function draw() {
                 // Show current for resistors and ammeters
                 if (c.type === 'resistor' || c.type === 'ammeter') {
                     ctx.fillStyle = c.type === 'ammeter' ? '#0369a1' : '#dc2626';
-                    ctx.fillText(`${Math.abs(current).toFixed(3)}A`, 0, 20);
+                    ctx.font = 'bold 11px Inter';
+                    ctx.textAlign = 'center';
+                    ctx.fillText(`I = ${Math.abs(current).toFixed(3)} А`, 0, 35);
                 }
 
                 // Show voltage for voltmeter
                 if (c.type === 'voltmeter') {
                     ctx.fillStyle = '#0369a1';
-                    ctx.fillText(`${Math.abs(v1 - v2).toFixed(2)}V`, 0, 20);
+                    ctx.font = 'bold 11px Inter';
+                    ctx.textAlign = 'center';
+                    ctx.fillText(`U = ${Math.abs(v1 - v2).toFixed(2)} В`, 0, 35);
                 }
 
+                // Draw arrow for current direction
                 if (Math.abs(current) > 1e-6 && c.type !== 'voltmeter') {
                     const dir = current > 0 ? 1 : -1;
+                    const arrowColor = c.type === 'ammeter' ? '#0369a1' : '#dc2626';
+                    const yPos = 20; // Position between component and text
+                    
+                    // Arrow line
+                    ctx.strokeStyle = arrowColor;
+                    ctx.lineWidth = 1.5;
                     ctx.beginPath();
-                    ctx.moveTo(-10 * dir, 5);
-                    ctx.lineTo(10 * dir, 5);
-                    ctx.lineTo(5 * dir, 0);
-                    ctx.moveTo(10 * dir, 5);
-                    ctx.lineTo(5 * dir, 10);
-                    ctx.strokeStyle = c.type === 'ammeter' ? '#0369a1' : '#dc2626';
+                    ctx.moveTo(-12 * dir, yPos);
+                    ctx.lineTo(12 * dir, yPos);
                     ctx.stroke();
+                    
+                    // Arrow head
+                    ctx.fillStyle = arrowColor;
+                    ctx.beginPath();
+                    ctx.moveTo(12 * dir, yPos);
+                    ctx.lineTo((12 - 4) * dir, yPos - 3);
+                    ctx.lineTo((12 - 4) * dir, yPos + 3);
+                    ctx.closePath();
+                    ctx.fill();
                 }
 
                 ctx.restore();
@@ -817,31 +1002,38 @@ function draw() {
         if (state.kvlPath.length > 1) {
             ctx.strokeStyle = '#d97706';
             ctx.fillStyle = '#d97706';
-            ctx.lineWidth = 2;
-            ctx.setLineDash([5, 5]);
+            ctx.lineWidth = 3;
+            ctx.setLineDash([8, 4]);
             
             for (let i = 0; i < state.kvlPath.length; i++) {
                 const current = state.kvlPath[i];
                 const next = state.kvlPath[(i + 1) % state.kvlPath.length];
                 
-                // Линия от текущего к следующему
+                // Линия от текущего к следующему (немного смещенная)
+                const dx = next.x - current.x;
+                const dy = next.y - current.y;
+                const len = Math.sqrt(dx*dx + dy*dy);
+                const offsetX = -dy / len * 15; // Перпендикулярное смещение
+                const offsetY = dx / len * 15;
+                
                 ctx.beginPath();
-                ctx.moveTo(current.x, current.y);
-                ctx.lineTo(next.x, next.y);
+                ctx.moveTo(current.x + offsetX, current.y + offsetY);
+                ctx.lineTo(next.x + offsetX, next.y + offsetY);
                 ctx.stroke();
                 
                 // Стрелка в середине линии
-                const midX = (current.x + next.x) / 2;
-                const midY = (current.y + next.y) / 2;
+                const midX = (current.x + next.x) / 2 + offsetX;
+                const midY = (current.y + next.y) / 2 + offsetY;
                 const angle = Math.atan2(next.y - current.y, next.x - current.x);
                 
                 ctx.save();
                 ctx.translate(midX, midY);
                 ctx.rotate(angle);
+                ctx.setLineDash([]);
                 ctx.beginPath();
-                ctx.moveTo(0, 0);
-                ctx.lineTo(-10, -5);
-                ctx.lineTo(-10, 5);
+                ctx.moveTo(8, 0);
+                ctx.lineTo(-4, -6);
+                ctx.lineTo(-4, 6);
                 ctx.closePath();
                 ctx.fill();
                 ctx.restore();
@@ -993,11 +1185,31 @@ canvas.addEventListener('dragover', (e) => {
     e.preventDefault();
 });
 
+function assignComponentLabel(comp) {
+    if (comp.type === 'junction') {
+        // For junctions, use letters A, B, C, D...
+        const junctions = state.components.filter(c => c.type === 'junction');
+        const index = junctions.length;
+        comp.label = String.fromCharCode(65 + index); // 65 = 'A'
+        return;
+    }
+    
+    const prefix = comp.type === 'resistor' ? 'R' :
+                   comp.type === 'voltage' ? 'E' :
+                   comp.type === 'current' ? 'J' :
+                   comp.type === 'ammeter' ? 'PA' :
+                   comp.type === 'voltmeter' ? 'PV' : 'C';
+    
+    const sameType = state.components.filter(c => c.type === comp.type);
+    comp.label = prefix + (sameType.length + 1);
+}
+
 canvas.addEventListener('drop', (e) => {
     e.preventDefault();
     const type = e.dataTransfer.getData('type');
     const pos = getMousePos(e);
     const comp = new Component(type, snapToGrid(pos.x), snapToGrid(pos.y));
+    assignComponentLabel(comp);
     state.components.push(comp);
     selectComponent(comp);
     saveToHistory();
@@ -1034,6 +1246,8 @@ function selectComponent(comp) {
         // Update inputs based on type
         if (comp instanceof Wire) {
             compTypeLabel.textContent = 'Провод';
+        } else if (comp.type === 'junction') {
+            compTypeLabel.textContent = 'Узел:';
         } else if (comp.type === 'resistor') {
             compTypeLabel.textContent = 'Резистор:';
             resistanceInput.style.display = 'flex';
@@ -1357,12 +1571,16 @@ btnRun.addEventListener('click', () => {
         btnRun.disabled = true;
         btnStop.disabled = false;
         document.getElementById('btn-clear-loop').disabled = false;
+        document.getElementById('btn-show-equations').disabled = false;
 
         // Disable editing during simulation
         canvas.style.pointerEvents = 'none'; // Simple lock
 
         draw();
         updateOverlay();
+        
+        // Auto-show equations on first run
+        setTimeout(() => showEquationsModal(), 300);
     } catch (e) {
         showErrorModal([`Ошибка расчета: ${e.message}`, 'Проверьте правильность схемы и значения компонентов.']);
         console.error(e);
@@ -1377,6 +1595,7 @@ btnStop.addEventListener('click', () => {
     btnRun.disabled = false;
     btnStop.disabled = true;
     document.getElementById('btn-clear-loop').disabled = true;
+    document.getElementById('btn-show-equations').disabled = true;
 
     canvas.style.pointerEvents = 'auto';
     overlayInfo.innerHTML = '';
@@ -1614,7 +1833,7 @@ function saveToHistory() {
     // Add current state
     const snapshot = {
         components: JSON.parse(JSON.stringify(state.components.map(c => ({
-            id: c.id, type: c.type, x: c.x, y: c.y, rotation: c.rotation, value: c.value
+            id: c.id, type: c.type, x: c.x, y: c.y, rotation: c.rotation, value: c.value, label: c.label
         })))),
         wires: JSON.parse(JSON.stringify(state.wires.map(w => ({
             startNode: { compId: w.startNode.comp.id, index: w.startNode.index },
@@ -1662,6 +1881,7 @@ function restoreFromHistory(snapshot) {
         comp.id = cData.id;
         comp.rotation = cData.rotation;
         comp.value = cData.value;
+        comp.label = cData.label || '';
         state.components.push(comp);
         compMap.set(comp.id, comp);
     });
@@ -1705,7 +1925,8 @@ function serializeCircuit() {
             x: c.x,
             y: c.y,
             rotation: c.rotation,
-            value: c.value
+            value: c.value,
+            label: c.label
         })),
         wires: state.wires.map(w => ({
             startNode: {
@@ -1735,6 +1956,11 @@ function deserializeCircuit(data) {
         comp.id = cData.id;
         comp.rotation = cData.rotation;
         comp.value = cData.value;
+        comp.label = cData.label || '';
+        // If no label, assign one
+        if (!comp.label) {
+            assignComponentLabel(comp);
+        }
         state.components.push(comp);
         compMap.set(comp.id, comp);
     });
@@ -1875,5 +2101,342 @@ examplesClose.addEventListener('click', hideExamplesModal);
 examplesModal.addEventListener('click', (e) => {
     if (e.target === examplesModal) {
         hideExamplesModal();
+    }
+});
+
+
+// --- Equations Display ---
+const equationsModal = document.getElementById('equations-modal');
+const equationsContent = document.getElementById('equations-content');
+const equationsClose = document.getElementById('equations-close');
+const equationsOk = document.getElementById('equations-ok');
+const btnShowEquations = document.getElementById('btn-show-equations');
+
+function generateEquationsHTML(result) {
+    const { matrix, vector, solution, numNodes, numVSources, components, voltageSources } = result;
+    
+    let html = '<div style="line-height: 1.8;">';
+    
+    // Header
+    html += '<h4 style="margin-top: 0;">Метод узловых потенциалов (MNA)</h4>';
+    html += `<p style="color: #6b7280; font-size: 0.9em;">Узлов: ${numNodes}, Источников ЭДС: ${numVSources}</p>`;
+    
+    // System of Linear Equations
+    html += '<h5>Система линейных уравнений:</h5>';
+    html += '<div style="background: #f9fafb; padding: 1.5rem; border-radius: 4px; border-left: 3px solid #2563eb; margin: 1rem 0; font-family: monospace;">';
+    
+    const varNames = [];
+    for (let i = 1; i < numNodes; i++) {
+        varNames.push(`V${i}`);
+    }
+    voltageSources.forEach((vs, k) => {
+        varNames.push(`I_E${k + 1}`);
+    });
+    
+    html += '<div style="position: relative; padding-left: 20px;">';
+    html += '<div style="position: absolute; left: 0; top: 0; bottom: 0; width: 15px; border-left: 2px solid #374151; border-top: 2px solid #374151; border-bottom: 2px solid #374151;"></div>';
+    
+    for (let i = 0; i < matrix.length; i++) {
+        let equation = '';
+        let first = true;
+        
+        for (let j = 0; j < matrix[i].length; j++) {
+            const coef = matrix[i][j];
+            if (Math.abs(coef) < 0.0001) continue;
+            
+            const sign = coef >= 0 ? '+' : '−';
+            const absCoef = Math.abs(coef);
+            const coefStr = absCoef === 1 ? '' : absCoef.toFixed(2) + '·';
+            
+            if (first) {
+                equation += coef >= 0 ? '' : '−';
+                equation += coefStr + varNames[j];
+                first = false;
+            } else {
+                equation += ` ${sign} ${coefStr}${varNames[j]}`;
+            }
+        }
+        
+        equation += ` = ${vector[i].toFixed(2)}`;
+        html += `<div style="padding: 4px 0;">${equation}</div>`;
+    }
+    
+    html += '</div>';
+    html += '</div>';
+    
+    // Unknowns
+    html += '<h5>Неизвестные:</h5>';
+    html += '<p>';
+    for (let i = 1; i < numNodes; i++) {
+        html += `V<sub>${i}</sub>${i < numNodes - 1 ? ', ' : ''}`;
+    }
+    if (numVSources > 0) {
+        html += numNodes > 1 ? ', ' : '';
+        voltageSources.forEach((vs, k) => {
+            html += `I<sub>E${k + 1}</sub>${k < numVSources - 1 ? ', ' : ''}`;
+        });
+    }
+    html += '</p>';
+    
+    // Matrix equation
+    html += '<h5>Матричная форма: A·x = b</h5>';
+    
+    // Matrix A
+    html += '<div style="display: flex; gap: 1rem; align-items: center; margin: 1rem 0; overflow-x: auto;">';
+    html += '<div style="border-left: 2px solid #374151; border-right: 2px solid #374151; padding: 0.5rem;">';
+    html += '<table style="border-collapse: collapse;">';
+    for (let i = 0; i < matrix.length; i++) {
+        html += '<tr>';
+        for (let j = 0; j < matrix[i].length; j++) {
+            const val = matrix[i][j];
+            const color = val === 0 ? '#9ca3af' : '#1f2937';
+            html += `<td style="padding: 4px 8px; text-align: right; color: ${color};">${val.toFixed(2)}</td>`;
+        }
+        html += '</tr>';
+    }
+    html += '</table>';
+    html += '</div>';
+    
+    html += '<span style="font-size: 1.5em;">·</span>';
+    
+    // Vector x
+    html += '<div style="border-left: 2px solid #374151; border-right: 2px solid #374151; padding: 0.5rem;">';
+    html += '<table>';
+    for (let i = 1; i < numNodes; i++) {
+        html += `<tr><td style="padding: 4px 8px;">V<sub>${i}</sub></td></tr>`;
+    }
+    voltageSources.forEach((vs, k) => {
+        html += `<tr><td style="padding: 4px 8px;">I<sub>E${k + 1}</sub></td></tr>`;
+    });
+    html += '</table>';
+    html += '</div>';
+    
+    html += '<span style="font-size: 1.5em;">=</span>';
+    
+    // Vector b
+    html += '<div style="border-left: 2px solid #374151; border-right: 2px solid #374151; padding: 0.5rem;">';
+    html += '<table>';
+    for (let i = 0; i < vector.length; i++) {
+        const val = vector[i];
+        const color = val === 0 ? '#9ca3af' : '#1f2937';
+        html += `<tr><td style="padding: 4px 8px; text-align: right; color: ${color};">${val.toFixed(2)}</td></tr>`;
+    }
+    html += '</table>';
+    html += '</div>';
+    html += '</div>';
+    
+    // Solution
+    html += '<h5>Решение:</h5>';
+    html += '<div style="background: #f0f9ff; padding: 1rem; border-radius: 4px; border-left: 3px solid #0369a1;">';
+    for (let i = 1; i < numNodes; i++) {
+        html += `<div>V<sub>${i}</sub> = ${solution[i - 1].toFixed(3)} В</div>`;
+    }
+    voltageSources.forEach((vs, k) => {
+        const idx = (numNodes - 1) + k;
+        html += `<div>I<sub>E${k + 1}</sub> = ${solution[idx].toFixed(3)} А</div>`;
+    });
+    html += '</div>';
+    
+    // Explanation
+    html += '<h5 style="margin-top: 1.5rem;">Пояснение:</h5>';
+    html += '<ul style="color: #6b7280; font-size: 0.9em; line-height: 1.6;">';
+    html += '<li>V<sub>i</sub> - потенциал узла i (В)</li>';
+    html += '<li>I<sub>E</sub> - ток через источник ЭДС (А)</li>';
+    html += '<li>Узел 0 - земля (V<sub>0</sub> = 0)</li>';
+    html += '<li>Матрица A содержит проводимости (G = 1/R) и связи источников</li>';
+    html += '<li>Вектор b содержит значения источников тока и напряжения</li>';
+    html += '</ul>';
+    
+    html += '</div>';
+    return html;
+}
+
+function generateKCLEquations(result) {
+    const { nodeVoltages, nodeMap, components } = result;
+    
+    let html = '<div style="line-height: 1.8;">';
+    html += '<h4 style="margin-top: 0;">Первый закон Кирхгофа (KCL)</h4>';
+    html += '<p style="color: #6b7280;">Сумма токов, входящих в узел, равна сумме токов, выходящих из узла</p>';
+    
+    // Group terminals by nodes
+    const nodeTerminals = new Map();
+    components.forEach(c => {
+        c.terminals.forEach((_, i) => {
+            const termId = `${c.id}_${i}`;
+            const nodeIdx = nodeMap.get(termId);
+            if (!nodeTerminals.has(nodeIdx)) {
+                nodeTerminals.set(nodeIdx, []);
+            }
+            nodeTerminals.set(nodeIdx, { comp: c, termIdx: i });
+        });
+    });
+    
+    // Generate equations for each node
+    nodeVoltages.forEach((voltage, nodeIdx) => {
+        if (nodeIdx === 0) return; // Skip ground
+        
+        html += `<div style="background: #f9fafb; padding: 1rem; margin: 1rem 0; border-radius: 4px; border-left: 3px solid #2563eb;">`;
+        html += `<h5 style="margin-top: 0;">Узел ${nodeIdx} (V = ${voltage.toFixed(2)} В):</h5>`;
+        
+        const currents = [];
+        let sumIn = 0;
+        let sumOut = 0;
+        
+        components.forEach(c => {
+            c.terminals.forEach((_, i) => {
+                const termId = `${c.id}_${i}`;
+                if (nodeMap.get(termId) === nodeIdx) {
+                    let current = 0;
+                    let direction = '';
+                    
+                    if (c.type === 'resistor' || c.type === 'ammeter' || c.type === 'voltmeter') {
+                        const n1 = nodeMap.get(`${c.id}_0`);
+                        const n2 = nodeMap.get(`${c.id}_1`);
+                        const v1 = nodeVoltages.get(n1);
+                        const v2 = nodeVoltages.get(n2);
+                        
+                        let R = c.value;
+                        if (c.type === 'ammeter') R = 0.001;
+                        if (c.type === 'voltmeter') R = 1000000;
+                        
+                        const i0to1 = (v1 - v2) / R;
+                        current = (i === 0) ? i0to1 : -i0to1;
+                    } else if (c.type === 'voltage') {
+                        current = result.sourceCurrents.get(c.id);
+                        if (i === 0) current = -current;
+                    } else if (c.type === 'current') {
+                        current = (i === 1) ? c.value : -c.value;
+                    }
+                    
+                    const compName = c.type === 'resistor' ? 'R' : 
+                                   c.type === 'voltage' ? 'E' : 
+                                   c.type === 'current' ? 'J' :
+                                   c.type === 'ammeter' ? 'PA' : 'PV';
+                    
+                    if (current > 0) {
+                        sumIn += current;
+                        direction = '→';
+                    } else {
+                        sumOut += Math.abs(current);
+                        direction = '←';
+                    }
+                    
+                    currents.push({ name: compName, value: current, direction });
+                }
+            });
+        });
+        
+        // Equation form
+        html += '<div style="background: #fff; padding: 1rem; border-radius: 4px; margin-top: 0.5rem; font-family: monospace;">';
+        html += '<strong>Уравнение:</strong><br>';
+        let equationParts = [];
+        currents.forEach(({ name, value }) => {
+            const sign = value >= 0 ? '+' : '−';
+            equationParts.push(`${sign} I<sub>${name}</sub>`);
+        });
+        html += equationParts.join(' ') + ' = 0';
+        html += '</div>';
+        
+        html += '<div style="font-family: monospace; margin-top: 0.5rem;">';
+        currents.forEach(({ name, value, direction }) => {
+            const sign = value > 0 ? '+' : '';
+            html += `<div>I<sub>${name}</sub> = ${sign}${value.toFixed(3)} А ${direction}</div>`;
+        });
+        html += '</div>';
+        
+        html += `<div style="margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px solid #e5e7eb;">`;
+        html += `<strong>Проверка: </strong>`;
+        const balance = currents.reduce((sum, c) => sum + c.value, 0);
+        html += `${currents.map(c => (c.value >= 0 ? '+' : '') + c.value.toFixed(3)).join(' ')} = ${balance.toFixed(6)} А`;
+        if (Math.abs(balance) < 0.001) {
+            html += ` <span style="color: #059669;">✓ Закон выполнен</span>`;
+        }
+        html += '</div>';
+        html += '</div>';
+    });
+    
+    html += '</div>';
+    return html;
+}
+
+function generateKVLEquations(result) {
+    const { nodeVoltages, nodeMap, components } = result;
+    
+    let html = '<div style="line-height: 1.8;">';
+    html += '<h4 style="margin-top: 0;">Второй закон Кирхгофа (KVL)</h4>';
+    html += '<p style="color: #6b7280;">Сумма ЭДС в замкнутом контуре равна сумме падений напряжения</p>';
+    
+    html += '<div style="background: #fef3c7; padding: 1rem; border-radius: 4px; border-left: 3px solid #d97706; margin: 1rem 0;">';
+    html += '<p style="margin: 0;"><strong>💡 Совет:</strong> Выберите компоненты на схеме, чтобы построить контур и проверить 2-й закон Кирхгофа</p>';
+    html += '</div>';
+    
+    // Show example with all components
+    html += '<h5>Падения напряжения на элементах:</h5>';
+    html += '<div style="background: #f9fafb; padding: 1rem; border-radius: 4px;">';
+    
+    components.forEach((c, idx) => {
+        const n1 = nodeMap.get(`${c.id}_0`);
+        const n2 = nodeMap.get(`${c.id}_1`);
+        const v1 = nodeVoltages.get(n1);
+        const v2 = nodeVoltages.get(n2);
+        const vDrop = v1 - v2;
+        
+        const compName = c.type === 'resistor' ? 'R' : 
+                       c.type === 'voltage' ? 'E' : 
+                       c.type === 'current' ? 'J' :
+                       c.type === 'ammeter' ? 'PA' : 'PV';
+        
+        html += `<div>U<sub>${compName}${idx + 1}</sub> = V<sub>${n1}</sub> - V<sub>${n2}</sub> = ${v1.toFixed(2)} - ${v2.toFixed(2)} = ${vDrop.toFixed(2)} В</div>`;
+    });
+    
+    html += '</div>';
+    
+    html += '<h5 style="margin-top: 1.5rem;">Пример контура:</h5>';
+    html += '<p style="color: #6b7280; font-size: 0.9em;">Для любого замкнутого контура:</p>';
+    html += '<div style="background: #f0f9ff; padding: 1rem; border-radius: 4px; border-left: 3px solid #0369a1;">';
+    html += '<div style="font-family: monospace; font-size: 1.1em;">Σ U = 0</div>';
+    html += '<p style="margin-top: 0.5rem; color: #6b7280; font-size: 0.9em;">Сумма всех напряжений по контуру (с учетом знаков) равна нулю</p>';
+    html += '</div>';
+    
+    html += '</div>';
+    return html;
+}
+
+function showEquationsModal() {
+    if (!state.simulationResult) return;
+    
+    document.getElementById('tab-mna').innerHTML = generateEquationsHTML(state.simulationResult);
+    document.getElementById('tab-kcl').innerHTML = generateKCLEquations(state.simulationResult);
+    document.getElementById('tab-kvl').innerHTML = generateKVLEquations(state.simulationResult);
+    
+    equationsModal.style.display = 'flex';
+    
+    // Setup tab switching
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const tabName = btn.dataset.tab;
+            
+            // Update buttons
+            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            
+            // Update content
+            document.querySelectorAll('.tab-content').forEach(c => c.style.display = 'none');
+            document.getElementById(`tab-${tabName}`).style.display = 'block';
+        });
+    });
+}
+
+function hideEquationsModal() {
+    equationsModal.style.display = 'none';
+}
+
+btnShowEquations.addEventListener('click', showEquationsModal);
+equationsClose.addEventListener('click', hideEquationsModal);
+equationsOk.addEventListener('click', hideEquationsModal);
+
+equationsModal.addEventListener('click', (e) => {
+    if (e.target === equationsModal) {
+        hideEquationsModal();
     }
 });
