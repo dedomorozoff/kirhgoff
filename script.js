@@ -29,7 +29,11 @@ const state = {
     dragWire: null,
     autoRoute: true, // Auto orthogonal routing
     kvlPath: [], // List of components selected for KVL loop
-    view: { x: 0, y: 0, scale: 1 } // Zoom and Pan
+    view: { x: 0, y: 0, scale: 1 }, // Zoom and Pan
+    // Undo/Redo
+    history: [],
+    historyIndex: -1,
+    maxHistory: 50
 };
 
 // Canvas Setup
@@ -904,6 +908,15 @@ canvas.addEventListener('wheel', (e) => {
     draw();
 }, { passive: false });
 
+// Undo/Redo buttons
+document.getElementById('btn-undo').addEventListener('click', () => {
+    undo();
+});
+
+document.getElementById('btn-redo').addEventListener('click', () => {
+    redo();
+});
+
 // Zoom buttons
 document.getElementById('btn-zoom-in').addEventListener('click', () => {
     const centerX = canvas.width / 2;
@@ -987,6 +1000,7 @@ canvas.addEventListener('drop', (e) => {
     const comp = new Component(type, snapToGrid(pos.x), snapToGrid(pos.y));
     state.components.push(comp);
     selectComponent(comp);
+    saveToHistory();
     draw();
 });
 
@@ -1111,6 +1125,7 @@ canvas.addEventListener('mousedown', (e) => {
                     }
                     
                     state.wires.push(new Wire(state.wireStartNode, term, finalPath));
+                    saveToHistory();
                 }
                 // Reset
                 state.isDrawingWire = false;
@@ -1222,6 +1237,7 @@ canvas.addEventListener('mouseup', (e) => {
 propRes.addEventListener('change', (e) => {
     if (state.selected && state.selected.type === 'resistor') {
         state.selected.value = parseFloat(e.target.value);
+        saveToHistory();
         draw();
     }
 });
@@ -1229,6 +1245,7 @@ propRes.addEventListener('change', (e) => {
 propVolt.addEventListener('change', (e) => {
     if (state.selected && state.selected.type === 'voltage') {
         state.selected.value = parseFloat(e.target.value);
+        saveToHistory();
         draw();
     }
 });
@@ -1236,6 +1253,7 @@ propVolt.addEventListener('change', (e) => {
 propCurrent.addEventListener('change', (e) => {
     if (state.selected && state.selected.type === 'current') {
         state.selected.value = parseFloat(e.target.value);
+        saveToHistory();
         draw();
     }
 });
@@ -1263,6 +1281,18 @@ document.getElementById('btn-clear').addEventListener('click', () => {
 
 // Keyboard
 window.addEventListener('keydown', (e) => {
+    // Undo/Redo
+    if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        undo();
+        return;
+    }
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
+        e.preventDefault();
+        redo();
+        return;
+    }
+    
     if (e.key === 'Delete' || e.key === 'Backspace') {
         if (state.selected) {
             if (state.selected instanceof Wire) {
@@ -1274,12 +1304,14 @@ window.addEventListener('keydown', (e) => {
                 state.components = state.components.filter(c => c !== state.selected);
             }
             selectComponent(null);
+            saveToHistory();
             draw();
         }
     }
     if (e.key === 'r' || e.key === 'R') {
         if (state.selected && state.selected.rotation !== undefined) {
             state.selected.rotation = (state.selected.rotation + 1) % 4;
+            saveToHistory();
             draw();
         }
     }
@@ -1574,6 +1606,91 @@ window.addEventListener('keydown', (e) => {
 });
 
 
+// --- Undo/Redo System ---
+function saveToHistory() {
+    // Remove any states after current index (when user made changes after undo)
+    state.history = state.history.slice(0, state.historyIndex + 1);
+    
+    // Add current state
+    const snapshot = {
+        components: JSON.parse(JSON.stringify(state.components.map(c => ({
+            id: c.id, type: c.type, x: c.x, y: c.y, rotation: c.rotation, value: c.value
+        })))),
+        wires: JSON.parse(JSON.stringify(state.wires.map(w => ({
+            startNode: { compId: w.startNode.comp.id, index: w.startNode.index },
+            endNode: { compId: w.endNode.comp.id, index: w.endNode.index },
+            waypoints: w.waypoints
+        }))))
+    };
+    
+    state.history.push(snapshot);
+    
+    // Limit history size
+    if (state.history.length > state.maxHistory) {
+        state.history.shift();
+    } else {
+        state.historyIndex++;
+    }
+    
+    updateUndoRedoButtons();
+}
+
+function undo() {
+    if (state.historyIndex > 0) {
+        state.historyIndex--;
+        restoreFromHistory(state.history[state.historyIndex]);
+        updateUndoRedoButtons();
+    }
+}
+
+function redo() {
+    if (state.historyIndex < state.history.length - 1) {
+        state.historyIndex++;
+        restoreFromHistory(state.history[state.historyIndex]);
+        updateUndoRedoButtons();
+    }
+}
+
+function restoreFromHistory(snapshot) {
+    state.components = [];
+    state.wires = [];
+    state.selected = null;
+    
+    const compMap = new Map();
+    snapshot.components.forEach(cData => {
+        const comp = new Component(cData.type, cData.x, cData.y);
+        comp.id = cData.id;
+        comp.rotation = cData.rotation;
+        comp.value = cData.value;
+        state.components.push(comp);
+        compMap.set(comp.id, comp);
+    });
+    
+    snapshot.wires.forEach(wData => {
+        const startComp = compMap.get(wData.startNode.compId);
+        const endComp = compMap.get(wData.endNode.compId);
+        if (startComp && endComp) {
+            const wire = new Wire(
+                { comp: startComp, index: wData.startNode.index },
+                { comp: endComp, index: wData.endNode.index },
+                wData.waypoints
+            );
+            state.wires.push(wire);
+        }
+    });
+    
+    selectComponent(null);
+    draw();
+}
+
+function updateUndoRedoButtons() {
+    const btnUndo = document.getElementById('btn-undo');
+    const btnRedo = document.getElementById('btn-redo');
+    
+    btnUndo.disabled = state.historyIndex <= 0;
+    btnRedo.disabled = state.historyIndex >= state.history.length - 1;
+}
+
 // --- Save/Load Circuit ---
 const btnSave = document.getElementById('btn-save');
 const btnLoad = document.getElementById('btn-load');
@@ -1706,6 +1823,8 @@ setInterval(autoSave, 30000);
 // Load on startup
 window.addEventListener('load', () => {
     autoLoad();
+    // Save initial empty state
+    saveToHistory();
 });
 
 
