@@ -7,6 +7,7 @@
     <title>Интерактивный стенд: Законы Кирхгофа</title>
     <link rel="stylesheet" href="style.css">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/lucide@latest"></script>
 </head>
 
 <body>
@@ -14,57 +15,85 @@
         <header class="app-header">
             <h1>Законы Кирхгофа</h1>
             <div class="controls">
-                <button id="btn-run" class="btn primary">Запустить симуляцию</button>
-                <button id="btn-stop" class="btn secondary" disabled>Остановить</button>
-                <button id="btn-clear" class="btn danger">Очистить схему</button>
+                <button id="btn-undo" class="btn secondary btn-icon" title="Отменить (Ctrl+Z)" disabled>
+                    <i data-lucide="undo"></i>
+                </button>
+                <button id="btn-redo" class="btn secondary btn-icon" title="Повторить (Ctrl+Y)" disabled>
+                    <i data-lucide="redo"></i>
+                </button>
+                <div style="width: 1px; height: 30px; background: var(--border-color); margin: 0 0.5rem;"></div>
+                <button id="btn-zoom-in" class="btn secondary btn-icon" title="Увеличить">
+                    <i data-lucide="zoom-in"></i>
+                </button>
+                <button id="btn-zoom-out" class="btn secondary btn-icon" title="Уменьшить">
+                    <i data-lucide="zoom-out"></i>
+                </button>
+                <button id="btn-zoom-reset" class="btn secondary btn-icon" title="Сбросить масштаб">
+                    <i data-lucide="maximize"></i>
+                </button>
+                <div style="width: 1px; height: 30px; background: var(--border-color); margin: 0 0.5rem;"></div>
+                <button id="btn-run" class="btn primary">
+                    <i data-lucide="play"></i>
+                    <span>Запустить</span>
+                </button>
+                <button id="btn-stop" class="btn secondary" disabled>
+                    <i data-lucide="square"></i>
+                    <span>Остановить</span>
+                </button>
+                <button id="btn-show-equations" class="btn secondary" disabled title="Показать уравнения">
+                    <i data-lucide="sigma"></i>
+                    <span>Уравнения</span>
+                </button>
+                <button id="btn-clear-loop" class="btn secondary" disabled>
+                    <i data-lucide="eraser"></i>
+                    <span>Очистить контур</span>
+                </button>
+                <button id="btn-save" class="btn secondary">
+                    <i data-lucide="save"></i>
+                    <span>Сохранить</span>
+                </button>
+                <button id="btn-load" class="btn secondary">
+                    <i data-lucide="folder-open"></i>
+                    <span>Загрузить</span>
+                </button>
+                <button id="btn-examples" class="btn secondary">
+                    <i data-lucide="book-open"></i>
+                    <span>Примеры</span>
+                </button>
+                <button id="btn-clear" class="btn danger">
+                    <i data-lucide="trash-2"></i>
+                    <span>Очистить</span>
+                </button>
             </div>
+            <input type="file" id="file-input" accept=".json" style="display: none;">
         </header>
 
         <main class="main-content">
             <aside class="sidebar">
                 <div class="component-palette">
                     <h3>Компоненты</h3>
-                    <div class="palette-item" draggable="true" data-type="resistor">
+                    <div class="palette-item" draggable="true" data-type="resistor" title="R - Резистор">
                         <div class="icon resistor-icon"></div>
-                        <span>Резистор</span>
                     </div>
-                    <div class="palette-item" draggable="true" data-type="voltage">
+                    <div class="palette-item" draggable="true" data-type="voltage" title="E - Источник ЭДС">
                         <div class="icon voltage-icon"></div>
-                        <span>Источник ЭДС</span>
+                    </div>
+                    <div class="palette-item" draggable="true" data-type="current" title="J - Источник тока">
+                        <div class="icon current-icon"></div>
+                    </div>
+                    <div class="palette-item" draggable="true" data-type="ammeter" title="PA - Амперметр">
+                        <div class="icon ammeter-icon"></div>
+                    </div>
+                    <div class="palette-item" draggable="true" data-type="voltmeter" title="PV - Вольтметр">
+                        <div class="icon voltmeter-icon"></div>
+                    </div>
+                    <div class="palette-item" draggable="true" data-type="junction" title="Узел соединения">
+                        <div class="icon junction-icon"></div>
                     </div>
                     <!-- Wire is drawn, not dragged, but maybe a mode toggle? -->
-                    <div class="palette-item" id="mode-wire">
+                    <div class="palette-item" id="mode-wire" title="Провод (клавиша W)">
                         <div class="icon wire-icon"></div>
-                        <span>Провод (W)</span>
                     </div>
-                </div>
-
-                <div class="properties-panel" id="properties-panel">
-                    <h3>Свойства</h3>
-                    <div class="no-selection">Выберите компонент</div>
-                    <div class="properties-content" style="display: none;">
-                        <label>
-                            Сопротивление (Ом):
-                            <input type="number" id="prop-resistance" min="0.1" step="10">
-                        </label>
-                        <label>
-                            Напряжение (В):
-                            <input type="number" id="prop-voltage" step="1">
-                        </label>
-                        <button id="btn-delete-comp" class="btn danger small">Удалить</button>
-                    </div>
-                </div>
-
-                <div class="info-panel">
-                    <h3>Справка</h3>
-                    <p><strong>Редактор:</strong> Перетаскивайте компоненты. Выберите "Провод": кликните на клемму,
-                        затем кликайте на свободное место для добавления изгибов, кликните на вторую клемму для
-                        завершения.</p>
-                    <p><strong>Поворот:</strong> Выделите компонент и нажмите R.</p>
-                    <p><strong>Удаление:</strong> Выделите и нажмите Del.</p>
-                    <p><strong>Симуляция:</strong> Нажмите "Запустить".</p>
-                    <p><strong>Зум:</strong> Колесико мыши.</p>
-                    <p><strong>Панорама:</strong> Средняя кнопка мыши (или колесико).</p>
                 </div>
             </aside>
 
@@ -73,8 +102,93 @@
                 <div class="overlay-info" id="overlay-info"></div>
             </div>
         </main>
+
+        <!-- Bottom Panel -->
+        <div class="bottom-panel" id="bottom-panel">
+            <div class="bottom-panel-section" id="component-props" style="display: none;">
+                <strong id="comp-type-label">Компонент:</strong>
+                <label id="resistance-input" style="display: none;">
+                    R (Ом): <input type="number" id="prop-resistance" min="0.1" step="10" value="100">
+                </label>
+                <label id="voltage-input" style="display: none;">
+                    E (В): <input type="number" id="prop-voltage" step="1" value="5">
+                </label>
+                <label id="current-input" style="display: none;">
+                    J (А): <input type="number" id="prop-current" min="0.001" step="0.01" value="0.1">
+                </label>
+                <div id="meter-reading" style="display: none;">
+                    <strong>Показания:</strong> <span id="meter-value" style="color: #0369a1; font-size: 1.1em;">-</span>
+                </div>
+                <button id="btn-delete-comp" class="btn danger small">Удалить</button>
+            </div>
+            <div class="bottom-panel-divider" id="divider-1" style="display: none;"></div>
+            <div class="bottom-panel-section">
+                <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+                    <input type="checkbox" id="auto-route" checked style="cursor: pointer;">
+                    <span>Автотрассировка</span>
+                </label>
+            </div>
+            <div class="bottom-panel-divider"></div>
+            <div class="bottom-panel-info" id="help-text">
+                <strong>Управление:</strong> Перетаскивайте компоненты • <strong>W</strong> - провод • <strong>R</strong> - поворот • <strong>Del</strong> - удалить • <strong>Колесико</strong> - зум • <strong>Средняя кнопка</strong> - панорама
+            </div>
+        </div>
     </div>
+
+    <!-- Error Modal -->
+    <div id="error-modal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>⚠ Ошибки валидации</h3>
+                <button class="modal-close" id="modal-close">&times;</button>
+            </div>
+            <div class="modal-body" id="error-list"></div>
+            <div class="modal-footer">
+                <button class="btn primary" id="modal-ok">Понятно</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Examples Modal -->
+    <div id="examples-modal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>📚 Библиотека примеров</h3>
+                <button class="modal-close" id="examples-close">&times;</button>
+            </div>
+            <div class="modal-body" id="examples-list"></div>
+        </div>
+    </div>
+
+    <!-- Equations Modal -->
+    <div id="equations-modal" class="modal" style="display: none;">
+        <div class="modal-content" style="max-width: 900px;">
+            <div class="modal-header">
+                <h3>📐 Уравнения цепи</h3>
+                <button class="modal-close" id="equations-close">&times;</button>
+            </div>
+            <div style="display: flex; gap: 0.5rem; padding: 0 20px; border-bottom: 1px solid var(--border-color);">
+                <button class="tab-btn active" data-tab="mna">MNA</button>
+                <button class="tab-btn" data-tab="kcl">1-й закон (KCL)</button>
+                <button class="tab-btn" data-tab="kvl">2-й закон (KVL)</button>
+            </div>
+            <div class="modal-body" style="font-family: 'Courier New', monospace; font-size: 0.9em;">
+                <div id="tab-mna" class="tab-content active"></div>
+                <div id="tab-kcl" class="tab-content" style="display: none;"></div>
+                <div id="tab-kvl" class="tab-content" style="display: none;"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn secondary" id="equations-ok">Закрыть</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="examples.js"></script>
     <script src="script.js"></script>
+    <script>
+        // Initialize Lucide icons
+        lucide.createIcons();
+    </script>
 </body>
 
 </html>
