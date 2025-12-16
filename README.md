@@ -4,7 +4,6 @@
 
 [Попробовать](https://dedomorozoff.github.io/kirhgoff/)
 
-![Скриншот приложения](image.png)
 
 ## Возможности
 
