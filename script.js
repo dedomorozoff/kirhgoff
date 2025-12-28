@@ -1071,6 +1071,22 @@ window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') { state.mode = 'select'; state.isDrawingWire = false; state.wireStartNode = null; draw(); }
 });
 
+// Deserialize external
+window.deserializeCircuit = (data) => {
+    // Adapter for legacy format from examples.js
+    const wires = data.wires.map(w => ({
+        s: { id: w.startNode.compId, i: w.startNode.index },
+        e: { id: w.endNode.compId, i: w.endNode.index },
+        p: w.waypoints || []
+    }));
+
+    const json = JSON.stringify({
+        c: data.components,
+        w: wires
+    });
+    restore(json);
+};
+
 // Simulation Controls
 const btnRun = document.getElementById('btn-run');
 const btnStop = document.getElementById('btn-stop');
@@ -1083,14 +1099,22 @@ btnRun.addEventListener('click', () => {
         state.simulationResult = CircuitSolver.solve(state.components, state.wires);
         state.isSimulating = true;
         btnRun.disabled = true; btnStop.disabled = false;
+        if (document.getElementById('btn-show-equations')) document.getElementById('btn-show-equations').disabled = false;
+
         canvas.style.pointerEvents = 'auto'; // Keep interaction for tooltips
         draw();
+
+        // Auto-show equations nicely
+        const eqHtml = generateEquationsHTML(state.simulationResult);
+        UI.createModal('equations-modal', 'Расчет Цепи', eqHtml);
+
     } catch (e) { console.error(e); UI.createModal('error-modal', 'Ошибка', 'Ошибка расчета: ' + e.message); }
 });
 
 btnStop.addEventListener('click', () => {
     state.isSimulating = false; state.simulationResult = null;
     btnRun.disabled = false; btnStop.disabled = true;
+    if (document.getElementById('btn-show-equations')) document.getElementById('btn-show-equations').disabled = true;
     draw();
 });
 
@@ -1145,13 +1169,118 @@ function restore(json) {
     draw();
 }
 
-// Deserialize external
-window.deserializeCircuit = (data) => {
-    const json = JSON.stringify({
-        c: data.components,
-        w: data.wires
+// --- Equations Generation ---
+
+function generateEquationsHTML(result) {
+    const { matrix, vector, solution, numNodes, numVSources, components, voltageSources } = result;
+
+    let html = '<div style="line-height: 1.6; color: var(--text-primary);">';
+
+    // Header
+    html += '<h4 style="margin: 0 0 1rem 0; color: var(--primary-color);">Метод Узловых Потенциалов (MNA)</h4>';
+    html += `<p style="color: var(--text-secondary); font-size: 0.9em; margin-bottom: 1rem;">Узлов: ${numNodes}, Источников ЭДС: ${numVSources}</p>`;
+
+    // System of Linear Equations
+    html += '<h5 style="margin-bottom: 0.5rem;">Система уравнений:</h5>';
+    html += '<div style="background: var(--bg-color); padding: 1rem; border-radius: 0.5rem; border: 1px solid var(--border-color); font-family: monospace; overflow-x: auto;">';
+
+    const varNames = [];
+    for (let i = 1; i < numNodes; i++) {
+        varNames.push(`V${i}`);
+    }
+    voltageSources.forEach((vs, k) => {
+        varNames.push(`I_E${k + 1}`);
     });
-    restore(json);
-};
+
+    for (let i = 0; i < matrix.length; i++) {
+        let equation = '';
+        let first = true;
+
+        for (let j = 0; j < matrix[i].length; j++) {
+            const coef = matrix[i][j];
+            if (Math.abs(coef) < 0.0001) continue;
+
+            const sign = coef >= 0 ? '+' : '−';
+            const absCoef = Math.abs(coef);
+            const coefStr = absCoef === 1 ? '' : absCoef.toFixed(2);
+
+            if (first) {
+                equation += coef >= 0 ? '' : '−';
+                equation += coefStr + varNames[j];
+                first = false;
+            } else {
+                equation += ` ${sign} ${coefStr}${varNames[j]}`;
+            }
+        }
+
+        equation += ` = ${vector[i].toFixed(2)}`;
+        html += `<div style="padding: 2px 0;">${equation}</div>`;
+    }
+    html += '</div>';
+
+    // Matrix Form
+    html += '<h5 style="margin: 1rem 0 0.5rem 0;">Матричная форма (A·x = b):</h5>';
+    html += '<div style="display: flex; gap: 0.5rem; align-items: center; overflow-x: auto; font-family: monospace; font-size: 0.9em;">';
+
+    // Matrix A
+    html += '<div style="border-left: 2px solid var(--text-primary); border-right: 2px solid var(--text-primary); padding: 0.25rem;">';
+    html += '<table style="border-collapse: collapse;">';
+    for (let i = 0; i < matrix.length; i++) {
+        html += '<tr>';
+        for (let j = 0; j < matrix[i].length; j++) {
+            const val = matrix[i][j];
+            const color = val === 0 ? 'var(--text-secondary)' : 'var(--text-primary)';
+            html += `<td style="padding: 2px 6px; text-align: right; color: ${color};">${val.toFixed(2)}</td>`;
+        }
+        html += '</tr>';
+    }
+    html += '</table></div>';
+
+    html += '<span>·</span>';
+
+    // Vector x
+    html += '<div style="border-left: 2px solid var(--text-primary); border-right: 2px solid var(--text-primary); padding: 0.25rem;">';
+    html += '<table>';
+    varNames.forEach(name => {
+        html += `<tr><td style="padding: 2px 4px;">${name}</td></tr>`;
+    });
+    html += '</table></div>';
+
+    html += '<span>=</span>';
+
+    // Vector b
+    html += '<div style="border-left: 2px solid var(--text-primary); border-right: 2px solid var(--text-primary); padding: 0.25rem;">';
+    html += '<table>';
+    vector.forEach(val => {
+        html += `<tr><td style="padding: 2px 4px;">${val.toFixed(2)}</td></tr>`;
+    });
+    html += '</table></div>';
+
+    html += '</div>';
+
+    // Solution
+    html += '<h5 style="margin: 1rem 0 0.5rem 0;">Решение:</h5>';
+    html += '<div style="background: rgba(16, 185, 129, 0.1); padding: 1rem; border-radius: 0.5rem; border: 1px solid rgba(16, 185, 129, 0.2);">';
+    for (let i = 1; i < numNodes; i++) {
+        html += `<div><strong style="color: var(--success-color);">V<sub>${i}</sub></strong> = ${solution[i - 1].toFixed(3)} В</div>`;
+    }
+    voltageSources.forEach((vs, k) => {
+        const idx = (numNodes - 1) + k;
+        html += `<div><strong style="color: var(--warning-color);">I_E${k + 1}</strong> = ${solution[idx].toFixed(3)} А</div>`;
+    });
+    html += '</div>';
+
+    html += '</div>';
+    return html;
+}
+
+if (document.getElementById('btn-show-equations')) {
+    document.getElementById('btn-show-equations').addEventListener('click', () => {
+        if (state.simulationResult) {
+            const eqHtml = generateEquationsHTML(state.simulationResult);
+            UI.createModal('equations-modal', 'Расчет Цепи', eqHtml);
+        }
+    });
+}
 
 saveToHistory(); // Initial state
